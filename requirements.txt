@@ -1,5 +1,8 @@
 # Pipecat con audio local + TTS Kokoro (offline, ONNX). Corre en Windows nativo.
-pipecat-ai[kokoro]>=1.9.0
+# Pineado a 1.9.0: 1.11.0 tiene una regresión verificada donde el StartFrame
+# nunca llega al final del pipeline incluso en un pipeline mínimo de un solo
+# processor (PipelineTask/WorkerRunner se cuelgan en el timeout de setup).
+pipecat-ai[kokoro]==1.9.0
 pyaudio
 numpy
 soundfile
@@ -25,3 +28,11 @@ websockets
 #   pip install -e .
 #   huggingface-cli download netease-youdao/Confucius4-R2T2 --local-dir ~/models/Confucius4-R2T2
 #   ./run_start_server.sh start --model_path ~/models/Confucius4-R2T2
+
+# --- LLM System 2 (LM Studio, OpenAI-compatible, local) ---
+# No requiere paquete Python extra (OpenAILLMService usa el cliente `openai`,
+# que ya viene con pipecat-ai). Requiere LM Studio corriendo con un modelo
+# cargado y su servidor local expuesto:
+#   lms server start          # o abrir LM Studio y activar el server
+#   lms server status         # confirmar "Server: ON (port: ...)"
+# Ajustar en main.py el `model` y `base_url` al puerto/modelo reales.
