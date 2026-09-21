@@ -1,0 +1,35 @@
+# Pesos de modelos y checkpoints (se descargan aparte, ver requirements.txt)
+models/
+pretrained_models/
+
+# Repos de terceros clonados como referencia/instalación (R2T2, FireRedVAD)
+vendor/
+
+# Entornos virtuales
+.venv/
+venv/
+*-venv/
+env/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+
+# Logs y artefactos en tiempo de ejecución del servidor R2T2
+logs/
+wav_tmp_store/
+run_example.log
+
+# Cachés de descarga (huggingface_hub, etc.)
+.cache/
+*.cache
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
