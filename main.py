@@ -39,7 +39,7 @@ async def main():
     )
 
     # 2. Servicios.
-    vad = VADProcessor(FireRedVADAnalyzer())  # Capa 0: VAD acústico (FireRedVAD streaming).
+    vad = VADProcessor(vad_analyzer=FireRedVADAnalyzer())  # Capa 0: VAD acústico (FireRedVAD streaming).
     # Servidor R2T2 corriendo dentro de WSL2 (ver README/ws): vLLM no soporta
     # Windows nativo, por eso el motor vive en Linux y este cliente le habla
     # por WebSocket. Arrancar antes: wsl -e bash -lc "cd ~/Confucius4-R2T2 && ./run_start_server.sh start --model_path ~/models/Confucius4-R2T2"
