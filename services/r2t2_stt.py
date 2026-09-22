@@ -122,6 +122,15 @@ class ConfuciusR2T2Service(STTService):
                 self._receiver_task.cancel()
             self._receiver_task = None
         self._ws = None
+        # Audio sin enviar (menos de un chunk completo) y deltas de texto
+        # sin drenar de una conexión que ya cerró NO deben sobrevivir a la
+        # próxima -- si no se limpian acá, se mezclan con el audio/texto
+        # del turno siguiente en la conexión nueva (bug real: texto viejo
+        # reapareciendo idéntico en turnos posteriores, con latencia cada
+        # vez más alta por el backlog acumulado).
+        self._audio_buffer.clear()
+        while not self._pending.empty():
+            self._pending.get_nowait()
 
     async def flush_final(self, timeout: float = 0.6) -> str:
         """Fuerza a R2T2 a emitir cualquier delta que haya quedado
@@ -170,6 +179,9 @@ class ConfuciusR2T2Service(STTService):
         while not self._pending.empty():
             final_chunks.append(self._pending.get_nowait())
 
+        # Ver comentario en _close_turn: sin esto, audio sin enviar del
+        # turno que se acaba de cerrar se mezclaba con el del próximo.
+        self._audio_buffer.clear()
         await self._open_turn()
         return "".join(final_chunks)
 
