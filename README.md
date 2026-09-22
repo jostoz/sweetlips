@@ -142,3 +142,34 @@ label es dinámico.
   instalados (bug de esa build de onnxruntime en Windows, no de instalación
   faltante). Por eso Kokoro-FastAPI (servidor PyTorch+CUDA aparte) en vez
   de intentar acelerar `pipecat-ai[kokoro]` (onnxruntime) por GPU.
+- **`qwen/qwen3.8-27b` en vez de `openai/gpt-oss-120b`**: medido 3x más
+  rápido (~220ms vs ~630ms) y sin tokens de razonamiento. Los modelos
+  `gpt-oss` (20b y 120b) tienen un bug conocido de streaming (reportado
+  en vLLM, LangChain, HF) donde el contenido de razonamiento rompe el
+  parser de Groq ("Parsing failed") y el turno se pierde entero, mudo.
+  `System2PromptBridge` además agrega un fallback hablado ante cualquier
+  `ErrorFrame` del LLM (viaja río arriba, nunca llegaba al TTS antes).
+- **AEC (WASAPI loopback) en modo bloqueante se cuelga para siempre en
+  silencio total**: WASAPI no entrega paquetes de un endpoint de render
+  idle. Solución: modo callback (PortAudio invoca solo cuando hay audio
+  activo, que es justo el caso que importa).
+
+## Referencia: otros modelos ASR/TTS open-source (no usados, no aplica hoy)
+
+Lista evaluada y descartada por ahora (no hay problema de precisión de
+transcripción ni de calidad de voz reportado -- los problemas de esta
+sesión fueron todos de timing de turno y de LLM, no de ASR/TTS):
+
+- **ASR**: Hojo-ASR-Multi-V1 (multilenguaje, WER top), SenseVoiceSmall
+  (234M, CPU, chino), whisper-large-v3-turbo (809M, 99 idiomas),
+  parakeet-tdt-0.6b-v2 (NVIDIA, inglés), distil-large-v3.5 (756M).
+  Nosotros usamos Confucius4-R2T2 (streaming, vLLM/WSL2) -- swap
+  significaría re-hacer toda la integración WebSocket sin un problema
+  real que lo justifique.
+- **TTS**: ya elegimos Kokoro-82M (validado independientemente por esta
+  lista como "el pequeño modelo que explota en inglés/multilenguaje"),
+  corriendo en GPU vía Kokoro-FastAPI. Otras opciones si algún día hace
+  falta clonación de voz o más idiomas: CosyVoice2-0.5B (zero-shot
+  clone, Apache-2.0), Piper (15-28M, ultra liviano para edge/CPU).
+- Reconsiderar sólo si aparece un problema real de precisión (nombres
+  propios, ruido de fondo, idioma no soportado) -- no antes.
