@@ -28,7 +28,12 @@ from services import latency_probe
 
 from actions.local_dispatcher import execute_local_command
 
-_INTERRUPT_WORDS = ("para", "cállate", "callate", "alto", "cancela")
+_INTERRUPT_WORDS = ("cállate", "callate", "detente", "silencio", "cancela")
+# "para" (sola) estaba antes: es una de las palabras más comunes del
+# español ("cosas para picar", "bueno para comer"...) y sin auriculares
+# el bot se autointerrumpía al escucharse decir su propia "para" por el
+# parlante -> mic -> ASR. Sacada; las que quedan son comandos explícitos
+# de corte que casi nunca aparecen sueltos en una frase normal.
 _ESCALATE_WORDS = ("por qué", "por que", "cómo", "como", "explícame", "explicame", "recomiéndame", "recomiendame")
 # ^ Ya NO se usa para escalar a mitad de frase (ver nota abajo en
 # _evaluate_intent) -- se deja documentado por si se reintroduce algo
