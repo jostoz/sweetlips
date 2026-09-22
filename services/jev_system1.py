@@ -58,6 +58,45 @@ _ESCALATE_WORDS = ("por qué", "por que", "cómo", "como", "explícame", "explic
 # similar con mejores garantías (ej: sólo si el texto ya tiene >N
 # palabras, o sólo al inicio del turno).
 
+_SLOW_PATH_TAG = "[DETAILED_ANSWER]"
+# Prefijo interno agregado al TextFrame para pedirle al LLM que ignore el
+# límite de una frase (ver DEFAULT_SYSTEM_PROMPT_EN en system2_llm.py).
+
+_SLOW_PATH_KEYWORDS = (
+    "explain in detail", "in depth", "walk me through", "compare",
+    "pros and cons", "step by step", "elaborate", "in detail",
+)
+# Heurística de FXPerto (fx_fast_slow_system.py QueryRouter) adaptada: sin
+# LLM extra para decidir (0ms, no agrega latencia al camino rápido).
+
+_SLOW_PATH_MIN_WORDS = 12
+# Preguntas largas casi siempre piden más que una frase -- tratarlas como
+# slow path evita la regla "una frase" cortando una respuesta que
+# necesitaba desarrollo.
+
+_SLOW_PATH_ACKS = (
+    "Let me think about that for a second.",
+    "Give me a moment to work through that.",
+    "Okay, let me put that together.",
+)
+_slow_path_ack_index = 0
+
+
+def _is_slow_path(text: str) -> bool:
+    words = text.split()
+    if len(words) >= _SLOW_PATH_MIN_WORDS:
+        return True
+    lower = text.lower()
+    return any(kw in lower for kw in _SLOW_PATH_KEYWORDS)
+
+
+def _next_slow_path_ack() -> str:
+    global _slow_path_ack_index
+    ack = _SLOW_PATH_ACKS[_slow_path_ack_index % len(_SLOW_PATH_ACKS)]
+    _slow_path_ack_index += 1
+    return ack
+
+
 
 class JevSystem1Processor(FrameProcessor):
     """Router System 1: interrumpe, resuelve localmente o escala a System 2."""
@@ -306,8 +345,20 @@ class JevSystem1Processor(FrameProcessor):
     async def _escalate(self, direction: FrameDirection) -> None:
         prompt = self.confirmed_text.strip()
         latency_probe.mark_turn_start()
-        print(f'[Jev] -> escalando a System 2 (LLM): "{prompt}"', flush=True)
         self.confirmed_text = ""
+        if _is_slow_path(prompt):
+            # Slow path (patrón FXPerto QueryRouter): ack hablado
+            # inmediato + TextFrame con la etiqueta que le saca a Groq el
+            # límite de una frase. El TTSSpeakFrame no es TextFrame, así
+            # que System2PromptBridge no lo intercepta -- suena de
+            # inmediato mientras el LLM arma la respuesta larga en
+            # paralelo (frames de pipecat ya son async, no hace falta
+            # asyncio.create_task acá).
+            print(f'[Jev] -> escalando a System 2 (LLM, slow path): "{prompt}"', flush=True)
+            await self.push_frame(TTSSpeakFrame(text=_next_slow_path_ack()), direction)
+            prompt = f"{_SLOW_PATH_TAG} {prompt}"
+        else:
+            print(f'[Jev] -> escalando a System 2 (LLM): "{prompt}"', flush=True)
         await self.push_frame(TextFrame(text=prompt), direction)
 
     def _evaluate_intent(self, text: str) -> dict:

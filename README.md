@@ -164,6 +164,23 @@ label es dinámico.
   para dejarle ~5GB de margen a Kokoro. Si vuelven a aparecer picos de
   latencia erráticos en el TTS, revisar `nvidia-smi` primero antes de
   sospechar de la voz/idioma.
+- **Router fast/slow (patrón portado de FXPerto `QueryRouter`)**: Jev ya
+  no manda todo por el mismo presupuesto de latencia. `_is_slow_path()`
+  en `services/jev_system1.py` clasifica el texto escalado con una
+  heurística sin costo (largo >= 12 palabras, o keywords tipo "explain
+  in detail"/"compare"/"walk me through"), sin llamada extra al LLM
+  (0ms). Si es slow path: Jev empuja un `TTSSpeakFrame` de ack
+  inmediato ("Let me think about that for a second.") y el `TextFrame`
+  real lleva el prefijo `[DETAILED_ANSWER]`, que el system prompt
+  (`DEFAULT_SYSTEM_PROMPT`/`_EN` en `services/system2_llm.py`)
+  interpreta como permiso para saltarse la regla de "una frase". No
+  hace falta `asyncio.create_task` ni gestión de background task: los
+  frames de pipecat ya son async, así que el ack suena mientras el LLM
+  arma la respuesta larga en paralelo. Motivación: no tiene sentido
+  perseguir <250ms para TODAS las consultas -- las simples ya están en
+  ~400-500ms (bien), y las complejas dejan de competir por ese
+  presupuesto porque el usuario ya sabe que "está pensando".
+
 
 ## Referencia: otros modelos ASR/TTS open-source (no usados, no aplica hoy)
 
