@@ -27,6 +27,7 @@ from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transcriptions.language import Language
 from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
 
+from services.aec_filter import FarEndBuffer, FarEndTapProcessor, WebRTCAECFilter
 from services.firered_vad import FireRedVADAnalyzer
 from services.jev_system1 import JevSystem1Processor
 from services.r2t2_stt import ConfuciusR2T2Service
@@ -35,6 +36,7 @@ from services.system2_llm import System2PromptBridge, System2ResponseCollector, 
 
 async def main():
     # 1. Audio local (micro y altavoz físicos del equipo).
+    far_end_buffer = FarEndBuffer()  # señal de referencia para el AEC.
     transport = LocalAudioTransport(
         params=LocalAudioTransportParams(
             audio_in_enabled=True,
@@ -42,6 +44,12 @@ async def main():
             # Usa el micrófono default de Windows (Micrófono Steren COM-126,
             # verificado funcional). El Realtek USB Audio aparecía
             # desconectado ("Unknown" en Device Manager) al probarlo.
+            audio_in_sample_rate=16000,
+            # AEC (WebRTC AEC3): cancela el eco del propio parlante para
+            # poder usar altavoces en vez de auriculares, como un smart
+            # speaker. Necesita la señal de referencia (far_end_tap más
+            # abajo, antes de transport.output()).
+            audio_in_filter=WebRTCAECFilter(far_end_buffer),
         )
     )
 
@@ -71,11 +79,12 @@ async def main():
     tts = KokoroTTSService(
         settings=KokoroTTSService.Settings(voice="af_heart", language=Language.ES),
     )
+    far_end_tap = FarEndTapProcessor(far_end_buffer)  # alimenta la señal de referencia del AEC.
 
     # 3. Pipeline.
     pipeline = Pipeline(
         [
-            transport.input(),  # Micro local (16 kHz).
+            transport.input(),  # Micro local (16 kHz) + AEC.
             vad,  # Capa 0: VAD acústico -> VADUserStarted/StoppedSpeakingFrame.
             r2t2_stt,  # Capa 1: ASR streaming append-only.
             jev_router,  # Capa 2: System 1 (decisión/interrupción/filtro).
@@ -83,6 +92,7 @@ async def main():
             system2_llm,  # Capa 3b: LLM cloud (Groq, OpenAI-compatible).
             system2_response_collector,  # Capa 3c: guarda la respuesta en el contexto.
             tts,  # Capa 4: streaming TTS.
+            far_end_tap,  # Captura lo que va a sonar, para el AEC.
             transport.output(),  # Altavoz físico.
         ]
     )

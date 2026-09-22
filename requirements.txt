@@ -8,6 +8,11 @@ numpy
 soundfile
 torch
 
+# AEC (cancelación de eco acústico, WebRTC AEC3) para poder usar parlantes
+# en vez de auriculares sin que el sistema se re-transcriba a sí mismo.
+# Ver services/aec_filter.py.
+pywebrtc-audio
+
 # Cliente WebSocket hacia el servidor R2T2 (que corre en WSL2, ver más abajo).
 websockets
 
