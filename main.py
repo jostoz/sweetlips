@@ -33,7 +33,12 @@ from services.jev_system1 import JevSystem1Processor
 from services.kokoro_gpu_tts import KokoroGPUTTSService
 from services import latency_probe
 from services.r2t2_stt import ConfuciusR2T2Service
-from services.system2_llm import System2PromptBridge, System2ResponseCollector, build_shared_context
+from services.system2_llm import (
+    DEFAULT_SYSTEM_PROMPT_EN,
+    System2PromptBridge,
+    System2ResponseCollector,
+    build_shared_context,
+)
 
 
 async def main():
@@ -82,23 +87,12 @@ async def main():
         # "localhost" resuelve primero a IPv6 (::1), que no responde, y
         # requests/urllib3 tarda ~2s en caer a IPv4 antes de conectar.
         ws_uri="ws://127.0.0.1:8272/asr_stream_api_v1",
-        language="Spanish",  # revertido: la prueba con "English" confirmó
-        # que R2T2 transcribe frases MÁS COMPLETAS en inglés, pero rompe
-        # el reconocimiento de los comandos de interrupción/acción, que
-        # están en español ("cállate", "párate" llegaban irreconocibles,
-        # ej. "Para. Hey", con el modelo primeado para inglés). Mientras
-        # los comandos y el LLM sigan en español, R2T2 tiene que estar en
-        # español -- el hallazgo del idioma queda documentado para si
-        # algún día se hace una versión en inglés completa.
-        # Hotwords (system_prompt) REVERTIDO: confirmado en vivo por el
-        # usuario que causaba alucinaciones -- el modelo "escuchaba"
-        # exactamente la lista de hotwords completa ("cállate, detente,
-        # silencio, cancela, enciende la luz, apaga la luz") de forma
-        # repetida e idéntica incluso cuando el usuario NO las había
-        # dicho (confirmado: "yo no dije apaga la luz nunca"). El
-        # contexto demasiado fuerte sesga al modelo a "oír" lo que se le
-        # primea. No usar system_prompt con frases completas -- si se
-        # reintenta, probar con palabras sueltas y bajo peso.
+        language="English",  # prueba completa en inglés: R2T2, LLM, TTS,
+        # comandos, todo -- para que la comparación sea real y no mezclada
+        # (la prueba anterior mezcló R2T2 en inglés con comandos en
+        # español y eso rompió todo). Si R2T2 transcribe mejor Y el resto
+        # de la pila funciona bien en inglés, podría bajar la necesidad
+        # de timers largos/smart-turn tan conservador.
     )
     # Smart-turn: modelo ONNX (viene empaquetado con pipecat, sin
     # descarga) que decide semánticamente si el usuario terminó de
@@ -111,7 +105,7 @@ async def main():
     # Capa 3: System 2 (razonamiento). Groq (cloud, API compatible con
     # OpenAI, inferencia LPU muy rápida) para no competir por VRAM con el
     # servidor R2T2 en la GPU local.
-    system2_context = build_shared_context()
+    system2_context = build_shared_context(system_prompt=DEFAULT_SYSTEM_PROMPT_EN)
     system2_prompt_bridge = System2PromptBridge(system2_context)
     system2_llm = OpenAILLMService(
         settings=OpenAILLMService.Settings(
@@ -140,10 +134,10 @@ async def main():
         base_url="http://127.0.0.1:8880/v1",
         api_key="not-needed",
         model="kokoro",
-        # af_heart era inglés (EEUU) -- sonaba como "americano hablando
-        # español mal". ef_dora es una de las 3 voces en español que
-        # trae Kokoro (ef_dora, em_alex, em_santa).
-        voice="ef_dora",
+        # af_heart: voz nativa en inglés de Kokoro (buena calidad,
+        # descartada antes para español por sonar "americano hablando
+        # español" -- en inglés suena bien, es su idioma nativo).
+        voice="af_heart",
     )
     loopback_capture = WasapiLoopbackCapture(far_end_buffer)
     await loopback_capture.start()  # referencia far-end real (WASAPI loopback) para el AEC.

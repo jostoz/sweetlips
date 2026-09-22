@@ -31,12 +31,11 @@ from services import latency_probe
 
 from actions.local_dispatcher import execute_local_command
 
-_INTERRUPT_WORDS = ("cállate", "callate", "detente", "silencio", "cancela")
-# "para" (sola) estaba antes: es una de las palabras más comunes del
-# español ("cosas para picar", "bueno para comer"...) y sin auriculares
-# el bot se autointerrumpía al escucharse decir su propia "para" por el
-# parlante -> mic -> ASR. Sacada; las que quedan son comandos explícitos
-# de corte que casi nunca aparecen sueltos en una frase normal.
+_INTERRUPT_WORDS = ("stop", "shut up", "quiet", "cancel", "enough")
+# Prueba completa en inglés: traducido de ("cállate", "callate",
+# "detente", "silencio", "cancela"). "stop" es corto y común en inglés
+# casual -- si genera falsos positivos (a diferencia de "para" en
+# español, que sí los daba), reconsiderar.
 _INTERRUPT_PREFIX_LEN = 4
 # Match por prefijo, no la palabra completa: si el usuario escala el
 # turno (o R2T2 tarda en transcribir) antes de terminar de decir
@@ -315,19 +314,18 @@ class JevSystem1Processor(FrameProcessor):
         """Reglas rápidas de Jev (System 1). Objetivo: decidir en <10ms."""
         words = text.split()
 
-        if "enciende" in text and "luz" in text:
+        if "turn on" in text and "light" in text:
             return {"type": "LOCAL_ACTION", "action": "TURN_ON", "target": "LIGHTS"}
-        if "apaga" in text and "luz" in text:
+        if "turn off" in text and "light" in text:
             return {"type": "LOCAL_ACTION", "action": "TURN_OFF", "target": "LIGHTS"}
 
-        # Word-list, no substring: "hora" como substring matchea "ahora"
-        # ("¿y ahora qué hacemos?"), que no tiene nada que ver con pedir
-        # la hora. El LLM contesta esto MAL ("no tengo acceso al reloj en
-        # tiempo real") cuando la máquina sí sabe la hora -- resuelto acá,
-        # sin pasar por System 2, determinístico y sin latencia de red.
-        if "hora" in words or "horas" in words:
+        # Word-list, no substring: avoids matching "time" inside e.g.
+        # "sometimes". The LLM answers this WRONG ("I don't have access to
+        # real-time clock data") when the machine actually knows the time
+        # -- resolved here, no LLM round-trip, deterministic.
+        if "time" in words:
             return {"type": "LOCAL_ACTION", "action": "QUERY", "target": "TIME"}
-        if "fecha" in words or ("qué" in words and "día" in words and "es" in words):
+        if "date" in words:
             return {"type": "LOCAL_ACTION", "action": "QUERY", "target": "DATE"}
 
 

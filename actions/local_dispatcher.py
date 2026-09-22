@@ -9,30 +9,25 @@ from datetime import datetime
 
 _LIGHTS_STATE = {"on": False}
 
-_DAYS_ES = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
-_MONTHS_ES = (
-    "enero", "febrero", "marzo", "abril", "mayo", "junio",
-    "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+_DAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+_MONTHS = (
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
 )
 
 
 def _describe_time() -> str:
-    now = datetime.now()  # hora local del sistema, sin forzar timezone.
+    now = datetime.now()  # local system time, no forced timezone.
     hour12 = now.hour % 12 or 12
-    if now.hour < 12:
-        periodo = "de la mañana"
-    elif now.hour < 19:
-        periodo = "de la tarde"
-    else:
-        periodo = "de la noche"
-    return f"Son las {hour12}:{now.minute:02d} {periodo}."
+    period = "AM" if now.hour < 12 else "PM"
+    return f"It's {hour12}:{now.minute:02d} {period}."
 
 
 def _describe_date() -> str:
     now = datetime.now()
-    dia_semana = _DAYS_ES[now.weekday()]
-    mes = _MONTHS_ES[now.month - 1]
-    return f"Hoy es {dia_semana}, {now.day} de {mes}."
+    weekday = _DAYS[now.weekday()]
+    month = _MONTHS[now.month - 1]
+    return f"Today is {weekday}, {month} {now.day}."
 
 
 def execute_local_command(action: str, target: str) -> str:
@@ -47,9 +42,9 @@ def execute_local_command(action: str, target: str) -> str:
     """
     if target == "LIGHTS":
         _LIGHTS_STATE["on"] = action == "TURN_ON"
-        estado = "encendidas" if _LIGHTS_STATE["on"] else "apagadas"
+        state = "on" if _LIGHTS_STATE["on"] else "off"
         # TODO(hardware): sustituir por la llamada real a GPIO/Zigbee/MQTT.
-        return f"Luces {estado}."
+        return f"Lights are {state}."
 
     if target == "TIME":
         return _describe_time()
@@ -57,4 +52,4 @@ def execute_local_command(action: str, target: str) -> str:
     if target == "DATE":
         return _describe_date()
 
-    return "Hecho."
+    return "Done."
