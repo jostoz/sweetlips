@@ -79,13 +79,15 @@ async def main():
         # requests/urllib3 tarda ~2s en caer a IPv4 antes de conectar.
         ws_uri="ws://127.0.0.1:8272/asr_stream_api_v1",
         language="Spanish",  # forzado: evita el modo bilingüe zh/en por defecto.
-        # Hotwords (campo system_prompt del protocolo, ver README oficial):
-        # ayuda a R2T2 a reconocer mejor/más rápido las palabras que Jev
-        # usa para decisiones críticas de baja latencia (interrupción,
-        # acciones locales) -- son justo las que más duele perder por el
-        # trade-off latencia/estabilidad del modelo (paradigma "Longest
-        # Stable Prefix": corta bordes de palabra por diseño).
-        system_prompt="cállate, detente, silencio, cancela, enciende la luz, apaga la luz",
+        # Hotwords (system_prompt) REVERTIDO: confirmado en vivo por el
+        # usuario que causaba alucinaciones -- el modelo "escuchaba"
+        # exactamente la lista de hotwords completa ("cállate, detente,
+        # silencio, cancela, enciende la luz, apaga la luz") de forma
+        # repetida e idéntica incluso cuando el usuario NO las había
+        # dicho (confirmado: "yo no dije apaga la luz nunca"). El
+        # contexto demasiado fuerte sesga al modelo a "oír" lo que se le
+        # primea. No usar system_prompt con frases completas -- si se
+        # reintenta, probar con palabras sueltas y bajo peso.
     )
     jev_router = JevSystem1Processor(r2t2_stt=r2t2_stt)
 
