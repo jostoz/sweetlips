@@ -78,6 +78,7 @@ class System2ResponseCollector(FrameProcessor):
             full_text = "".join(self._buffer)
             if full_text:
                 self._context.add_message({"role": "assistant", "content": full_text})
+                print(f"[System2] respuesta del LLM: \"{full_text}\"", flush=True)
             self._buffer = []
 
         # Deja pasar todo tal cual: el TTS consume esta misma secuencia de frames.

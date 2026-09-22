@@ -38,9 +38,11 @@ class JevSystem1Processor(FrameProcessor):
             return
 
         self.confirmed_text = f"{self.confirmed_text} {token_text}".strip()
+        print(f"[Jev] escuchado: \"{self.confirmed_text}\"", flush=True)
 
         # 1. Reflejo de interrupción (barge-in): corta System 2/TTS al instante.
         if any(word in token_text for word in _INTERRUPT_WORDS):
+            print("[Jev] -> interrupción detectada, cortando TTS", flush=True)
             await self.broadcast_interruption()
             self.confirmed_text = ""
             return
@@ -49,6 +51,7 @@ class JevSystem1Processor(FrameProcessor):
 
         if decision["type"] == "LOCAL_ACTION":
             result_speech = execute_local_command(decision["action"], decision["target"])
+            print(f"[Jev] -> acción local: {decision['action']} {decision['target']} => \"{result_speech}\"", flush=True)
             self.confirmed_text = ""
             # Respuesta directa al TTS, sin pasar por el LLM (System 2).
             await self.push_frame(TextFrame(text=result_speech), direction)
@@ -56,6 +59,7 @@ class JevSystem1Processor(FrameProcessor):
 
         if decision["type"] == "ESCALATE_SYSTEM_2":
             prompt = self.confirmed_text
+            print(f"[Jev] -> escalando a System 2 (LLM): \"{prompt}\"", flush=True)
             self.confirmed_text = ""
             await self.push_frame(TextFrame(text=prompt), direction)
             return
