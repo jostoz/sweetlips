@@ -18,6 +18,7 @@ import asyncio
 import os
 
 
+from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineTask
@@ -54,7 +55,16 @@ async def main():
     )
 
     # 2. Servicios.
-    vad = VADProcessor(vad_analyzer=FireRedVADAnalyzer())  # Capa 0: VAD acústico (FireRedVAD streaming).
+    vad = VADProcessor(
+        vad_analyzer=FireRedVADAnalyzer(
+            params=VADParams(
+                # 0.2s (default) corta la frase en pedacitos con cualquier
+                # micro-pausa/respiración natural. 0.7s tolera pausas reales
+                # sin cortar el turno a mitad de oración.
+                stop_secs=0.7,
+            )
+        )
+    )  # Capa 0: VAD acústico (FireRedVAD streaming).
     # Servidor R2T2 corriendo dentro de WSL2 (ver README/ws): vLLM no soporta
     # Windows nativo, por eso el motor vive en Linux y este cliente le habla
     # por WebSocket. Arrancar antes: wsl -e bash -lc "cd ~/Confucius4-R2T2 && ./run_start_server.sh start --model_path ~/models/Confucius4-R2T2"
