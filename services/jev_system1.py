@@ -19,6 +19,7 @@ from pipecat.frames.frames import (
     Frame,
     TextFrame,
     TranscriptionFrame,
+    VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
@@ -44,11 +45,21 @@ class JevSystem1Processor(FrameProcessor):
     considera que el bot "terminó" (buffer de reproducción), y sin eso el
     mic se re-transcribe a sí mismo justo en ese hueco."""
 
+    _TURN_END_DEBOUNCE_SECS = 0.5
+    """Al detectar VADUserStoppedSpeakingFrame (0.7s de silencio) no
+    escalamos al instante: es común hacer una pausa corta para pensar y
+    seguir la misma idea 1-2s después ("pláticame qué lugares conoces
+    tú... pláticame qué lugares conoc[es]" se cortaba justo ahí). Con
+    este debounce, si el usuario retoma antes de que se cumpla el tiempo
+    (VADUserStartedSpeakingFrame), cancelamos la escalada pendiente y
+    seguimos acumulando texto en el mismo turno en vez de perderlo."""
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.confirmed_text = ""
         self._bot_speaking = False
         self._unmute_task: asyncio.Task | None = None
+        self._pending_escalate_task: asyncio.Task | None = None
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -59,6 +70,9 @@ class JevSystem1Processor(FrameProcessor):
             if self._unmute_task is not None:
                 self._unmute_task.cancel()
                 self._unmute_task = None
+            if self._pending_escalate_task is not None:
+                self._pending_escalate_task.cancel()
+                self._pending_escalate_task = None
             latency_probe.mark("bot empieza a hablar (audio real)")
             self._bot_speaking = True
             self.confirmed_text = ""
@@ -77,12 +91,32 @@ class JevSystem1Processor(FrameProcessor):
             await self._handle_transcription(frame, direction)
             return
 
-        if isinstance(frame, VADUserStoppedSpeakingFrame):
-            await self._handle_turn_end(direction)
+        if isinstance(frame, VADUserStartedSpeakingFrame):
+            # El usuario retomó antes de que se cumpliera el debounce de
+            # fin de turno: cancelar la escalada pendiente, seguir
+            # acumulando en el mismo turno (NO resetear confirmed_text).
+            if self._pending_escalate_task is not None:
+                self._pending_escalate_task.cancel()
+                self._pending_escalate_task = None
             await self.push_frame(frame, direction)
             return
 
+        if isinstance(frame, VADUserStoppedSpeakingFrame):
+            await self.push_frame(frame, direction)
+            if self._pending_escalate_task is not None:
+                self._pending_escalate_task.cancel()
+            self._pending_escalate_task = asyncio.create_task(self._debounced_turn_end(direction))
+            return
+
         await self.push_frame(frame, direction)
+
+    async def _debounced_turn_end(self, direction: FrameDirection) -> None:
+        try:
+            await asyncio.sleep(self._TURN_END_DEBOUNCE_SECS)
+        except asyncio.CancelledError:
+            return
+        self._pending_escalate_task = None
+        await self._handle_turn_end(direction)
 
     async def _unmute_after_grace(self) -> None:
         try:
