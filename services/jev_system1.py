@@ -337,6 +337,14 @@ class JevSystem1Processor(FrameProcessor):
         decision = self._evaluate_intent(normalized)
 
         if decision["type"] == "LOCAL_ACTION":
+            latency_probe.mark_turn_start()
+            # Sin esto, mark("bot empieza a hablar") usa el _t0 de la
+            # ÚLTIMA escalada a LLM (mark_turn_start solo se llamaba en
+            # _escalate) -- bug real visto en vivo: una acción local
+            # ("What time is it") reportó [LAT] t=11622ms porque el
+            # timer venía de un turno de slow-path varios segundos
+            # antes. La latencia real era ~170ms. También contaminaba
+            # el histograma de Prometheus con outliers falsos.
             result_speech = execute_local_command(decision["action"], decision["target"])
             print(f'[Jev] -> acción local: {decision["action"]} {decision["target"]} => "{result_speech}"', flush=True)
             self.confirmed_text = ""
