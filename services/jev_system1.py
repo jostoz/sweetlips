@@ -263,10 +263,23 @@ class JevSystem1Processor(FrameProcessor):
 
     def _evaluate_intent(self, text: str) -> dict:
         """Reglas rápidas de Jev (System 1). Objetivo: decidir en <10ms."""
+        words = text.split()
+
         if "enciende" in text and "luz" in text:
             return {"type": "LOCAL_ACTION", "action": "TURN_ON", "target": "LIGHTS"}
         if "apaga" in text and "luz" in text:
             return {"type": "LOCAL_ACTION", "action": "TURN_OFF", "target": "LIGHTS"}
+
+        # Word-list, no substring: "hora" como substring matchea "ahora"
+        # ("¿y ahora qué hacemos?"), que no tiene nada que ver con pedir
+        # la hora. El LLM contesta esto MAL ("no tengo acceso al reloj en
+        # tiempo real") cuando la máquina sí sabe la hora -- resuelto acá,
+        # sin pasar por System 2, determinístico y sin latencia de red.
+        if "hora" in words or "horas" in words:
+            return {"type": "LOCAL_ACTION", "action": "QUERY", "target": "TIME"}
+        if "fecha" in words or ("qué" in words and "día" in words and "es" in words):
+            return {"type": "LOCAL_ACTION", "action": "QUERY", "target": "DATE"}
+
 
         # Antes escalaba a System 2 apenas aparecía una palabra tipo "cómo"
         # en el texto acumulado, SIN esperar a que el usuario terminara de
