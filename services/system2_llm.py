@@ -27,6 +27,8 @@ from pipecat.frames.frames import (
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
+from services import latency_probe
+
 DEFAULT_SYSTEM_PROMPT = (
     "Sos el System 2 (razonamiento) de un asistente de voz Edge. "
     "Te llegan solo las consultas que System 1 no pudo resolver con una "
@@ -56,6 +58,7 @@ class System2PromptBridge(FrameProcessor):
 
         if isinstance(frame, TextFrame) and not isinstance(frame, LLMTextFrame):
             self._context.add_message({"role": "user", "content": frame.text})
+            latency_probe.mark("prompt enviado al LLM (Groq)")
             await self.push_frame(LLMContextFrame(context=self._context), direction)
             return
 
@@ -75,14 +78,15 @@ class System2ResponseCollector(FrameProcessor):
 
         if isinstance(frame, LLMFullResponseStartFrame):
             self._buffer = []
+            latency_probe.mark("LLM: primer token")
         elif isinstance(frame, LLMTextFrame):
             self._buffer.append(frame.text)
         elif isinstance(frame, LLMFullResponseEndFrame):
             full_text = "".join(self._buffer)
+            latency_probe.mark("LLM: respuesta completa")
             if full_text:
                 self._context.add_message({"role": "assistant", "content": full_text})
                 print(f"[System2] respuesta del LLM: \"{full_text}\"", flush=True)
             self._buffer = []
-
         # Deja pasar todo tal cual: el TTS consume esta misma secuencia de frames.
         await self.push_frame(frame, direction)

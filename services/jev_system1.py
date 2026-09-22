@@ -21,6 +21,8 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
+from services import latency_probe
+
 from actions.local_dispatcher import execute_local_command
 
 _INTERRUPT_WORDS = ("para", "cállate", "callate", "alto", "cancela")
@@ -41,6 +43,7 @@ class JevSystem1Processor(FrameProcessor):
         if isinstance(frame, BotStartedSpeakingFrame):
             # El bot va a hablar: silenciar el ASR para no re-transcribir su
             # propia voz por el micrófono (sin auriculares hay acople).
+            latency_probe.mark("bot empieza a hablar (audio real)")
             self._bot_speaking = True
             self.confirmed_text = ""
             await self.push_frame(frame, direction)
@@ -117,6 +120,7 @@ class JevSystem1Processor(FrameProcessor):
 
     async def _escalate(self, direction: FrameDirection) -> None:
         prompt = self.confirmed_text.strip()
+        latency_probe.mark_turn_start()
         print(f'[Jev] -> escalando a System 2 (LLM): "{prompt}"', flush=True)
         self.confirmed_text = ""
         await self.push_frame(TextFrame(text=prompt), direction)
