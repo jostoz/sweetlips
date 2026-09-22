@@ -61,12 +61,16 @@ class JevSystem1Processor(FrameProcessor):
     Bajado de 0.5s a 0.35s: sumado a los 0.5s de VAD, 0.7+0.5s totales se
     sentía lento para una charla conversacional."""
 
-    def __init__(self, **kwargs):
+    def __init__(self, r2t2_stt=None, **kwargs):
         super().__init__(**kwargs)
         self.confirmed_text = ""
         self._bot_speaking = False
         self._unmute_task: asyncio.Task | None = None
         self._pending_escalate_task: asyncio.Task | None = None
+        self._r2t2_stt = r2t2_stt
+        """Referencia opcional a ConfuciusR2T2Service: si está seteada, se
+        le pide flush_final() antes de escalar (ver _debounced_turn_end)
+        para no perder la cola de la última palabra dicha."""
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -123,6 +127,11 @@ class JevSystem1Processor(FrameProcessor):
         except asyncio.CancelledError:
             return
         self._pending_escalate_task = None
+        if self._r2t2_stt is not None:
+            tail = await self._r2t2_stt.flush_final()
+            if tail:
+                self.confirmed_text += tail
+                print(f'[Jev] flush R2T2 recuperó cola: "{tail}"', flush=True)
         await self._handle_turn_end(direction)
 
     async def _unmute_after_grace(self) -> None:

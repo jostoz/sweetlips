@@ -114,6 +114,46 @@ class ConfuciusR2T2Service(STTService):
             self._receiver_task = None
         self._ws = None
 
+    async def flush_final(self, timeout: float = 0.6) -> str:
+        """Fuerza a R2T2 a emitir cualquier delta que haya quedado
+        procesando del audio ya enviado, antes de que Jev decida el texto
+        final del turno.
+
+        Sin esto, Jev escala con lo que R2T2 alcanzó a mandar hasta el
+        instante exacto en que el VAD detecta silencio -- pero el
+        encoder/decoder de R2T2 tiene su propia latencia de inferencia, así
+        que la última palabra dicha suele quedar "en vuelo" y se pierde
+        (medido en vivo: "tu lugar favor[ito]", "tú no me escuch[aste]").
+
+        Protocolo (ver docstring del módulo): mandar el string literal EOS
+        fuerza al servidor a mandar el delta final y cerrar la conexión.
+        Cierra la conexión actual, drena lo que haya llegado, y abre una
+        nueva para el próximo turno (mismo ciclo que `_process_assistant_turn`,
+        pero disparado por el fin de turno del USUARIO, no del bot).
+        """
+        if self._ws is None:
+            return ""
+        self._closing = True
+        try:
+            await self._ws.send(_EOS)
+        except Exception:
+            pass
+        if self._receiver_task is not None:
+            try:
+                await asyncio.wait_for(self._receiver_task, timeout=timeout)
+            except (asyncio.TimeoutError, Exception):
+                self._receiver_task.cancel()
+            self._receiver_task = None
+        self._ws = None
+        self._closing = False
+
+        final_chunks: list[str] = []
+        while not self._pending.empty():
+            final_chunks.append(self._pending.get_nowait())
+
+        await self._open_turn()
+        return "".join(final_chunks)
+
     async def _receiver_loop(self) -> None:
         """Lee mensajes del servidor y encola los deltas de texto no vacíos."""
         assert self._ws is not None

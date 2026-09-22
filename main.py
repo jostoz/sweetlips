@@ -80,7 +80,7 @@ async def main():
         ws_uri="ws://127.0.0.1:8272/asr_stream_api_v1",
         language="Spanish",  # forzado: evita el modo bilingüe zh/en por defecto.
     )
-    jev_router = JevSystem1Processor()
+    jev_router = JevSystem1Processor(r2t2_stt=r2t2_stt)
 
     # Capa 3: System 2 (razonamiento). Groq (cloud, API compatible con
     # OpenAI, inferencia LPU muy rápida) para no competir por VRAM con el
