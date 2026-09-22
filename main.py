@@ -23,14 +23,13 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineTask
 from pipecat.processors.audio.vad_processor import VADProcessor
-from pipecat.services.kokoro.tts import KokoroTTSService
 from pipecat.services.openai.llm import OpenAILLMService
-from pipecat.transcriptions.language import Language
 from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
 
 from services.aec_filter import FarEndBuffer, FarEndTapProcessor, WebRTCAECFilter
 from services.firered_vad import FireRedVADAnalyzer
 from services.jev_system1 import JevSystem1Processor
+from services.kokoro_gpu_tts import KokoroGPUTTSService
 from services.r2t2_stt import ConfuciusR2T2Service
 from services.system2_llm import System2PromptBridge, System2ResponseCollector, build_shared_context
 
@@ -71,7 +70,10 @@ async def main():
     # Windows nativo, por eso el motor vive en Linux y este cliente le habla
     # por WebSocket. Arrancar antes: wsl -e bash -lc "cd ~/Confucius4-R2T2 && ./run_start_server.sh start --model_path ~/models/Confucius4-R2T2"
     r2t2_stt = ConfuciusR2T2Service(
-        ws_uri="ws://localhost:8272/asr_stream_api_v1",
+        # 127.0.0.1 explícito, no "localhost": en esta máquina Windows
+        # "localhost" resuelve primero a IPv6 (::1), que no responde, y
+        # requests/urllib3 tarda ~2s en caer a IPv4 antes de conectar.
+        ws_uri="ws://127.0.0.1:8272/asr_stream_api_v1",
         language="Spanish",  # forzado: evita el modo bilingüe zh/en por defecto.
     )
     jev_router = JevSystem1Processor()
@@ -84,18 +86,31 @@ async def main():
     system2_llm = OpenAILLMService(
         settings=OpenAILLMService.Settings(
             model="openai/gpt-oss-120b",
-            # Forzado: el prompt pide respuestas cortas pero el modelo no
-            # siempre respeta eso (vimos párrafos enteros tipo ensayo).
-            # Un límite duro evita monólogos largos del bot.
-            max_completion_tokens=60,
+            # gpt-oss-120b es un modelo "reasoning": gasta tokens internos
+            # pensando antes de contestar. Con max_completion_tokens=60 y
+            # razonamiento en default, el pensamiento se comía casi todo
+            # el presupuesto y dejaba respuestas de 1 letra ("P", "¿Sí?").
+            # reasoning_effort=low reduce ese pensamiento interno; subimos
+            # el límite para dejar margen real a la respuesta hablada.
+            max_completion_tokens=150,
+            extra={"reasoning_effort": "low"},
         ),
         api_key=os.environ["GROQ_API_KEY"],
         base_url="https://api.groq.com/openai/v1",
     )
     system2_response_collector = System2ResponseCollector(system2_context)
 
-    tts = KokoroTTSService(
-        settings=KokoroTTSService.Settings(voice="af_heart", language=Language.ES),
+    # Kokoro-FastAPI (servidor separado, PyTorch+CUDA real -- medido:
+    # síntesis en 135-230ms en GPU, vs ~1.2s en CPU vía onnxruntime).
+    # Arrancar antes: vendor/Kokoro-FastAPI/start-gpu.ps1 (puerto 8880).
+    tts = KokoroGPUTTSService(
+        base_url="http://127.0.0.1:8880/v1",
+        api_key="not-needed",
+        model="kokoro",
+        # af_heart era inglés (EEUU) -- sonaba como "americano hablando
+        # español mal". ef_dora es una de las 3 voces en español que
+        # trae Kokoro (ef_dora, em_alex, em_santa).
+        voice="ef_dora",
     )
     far_end_tap = FarEndTapProcessor(far_end_buffer)  # alimenta la señal de referencia del AEC.
 

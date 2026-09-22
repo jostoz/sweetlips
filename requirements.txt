@@ -1,10 +1,13 @@
-# Pipecat con audio local + TTS Kokoro (offline, ONNX). Corre en Windows nativo.
+# Pipecat con audio local. Corre en Windows nativo.
 # Pineado a 1.9.0: 1.11.0 tiene una regresión verificada donde el StartFrame
 # nunca llega al final del pipeline incluso en un pipeline mínimo de un solo
 # processor (PipelineTask/WorkerRunner se cuelgan en el timeout de setup).
-pipecat-ai[kokoro]==1.9.0
-# `pipecat-ai[kokoro]` instala `onnxruntime` (CPU). Probamos acelerar Kokoro
-# TTS por GPU y ninguna opción funcionó en este Windows:
+pipecat-ai==1.9.0
+
+# --- TTS: Kokoro-FastAPI (GPU, PyTorch+CUDA) ---
+# `pipecat-ai[kokoro]` (extra `onnxruntime`, CPU) fue el primer intento:
+# ~1.2-1.3s de síntesis por respuesta corta, estable, pero lento. Se probó
+# acelerar por GPU y ninguna opción de onnxruntime funcionó en este Windows:
 #   - onnxruntime-directml: crashea con "ConvTranspose" (ISTFTNet de Kokoro
 #     no es compatible con ese backend) -> tira el TTS entero a "unusable"
 #     tras 3 fallos.
@@ -12,9 +15,37 @@ pipecat-ai[kokoro]==1.9.0
 #     nvidia-cublas/nvidia-cudnn-cu13 estén instalados y el DLL cargue bien
 #     standalone — onnxruntime no honra `os.add_dll_directory` para su
 #     propio provider de CUDA en esta versión/plataforma.
-# Quedamos en CPU (`onnxruntime~=1.24.3`, pineado a lo que pide pipecat):
-# ~1-1.3s de síntesis por respuesta corta, estable, sin crashes.
-onnxruntime~=1.24.3
+#
+# Solución real: Kokoro-FastAPI (https://github.com/remsky/Kokoro-FastAPI),
+# un servidor HTTP separado que corre el modelo Kokoro con PyTorch+CUDA
+# directo (no onnxruntime). Medido en esta máquina: síntesis en 135-230ms
+# en GPU vs ~1.2s en CPU. Corre como proceso aparte, NO como paquete de
+# este requirements.txt. Setup (una vez), desde la raíz del repo:
+#   git clone https://github.com/remsky/Kokoro-FastAPI vendor/Kokoro-FastAPI
+#   cd vendor/Kokoro-FastAPI
+#   # eSpeak NG es requerido por la fonemización (instala con admin):
+#   #   Start-Process msiexec.exe -Verb RunAs -Wait -ArgumentList '/i espeak-ng.msi /quiet'
+#   uv venv && uv pip install -e ".[gpu]" --only-binary spacy
+#   # uv pip install (modo legacy) IGNORA [tool.uv.sources]/[tool.uv.index]
+#   # del pyproject.toml (eso es solo para `uv sync`), así que instala
+#   # torch CPU por default. Forzar CUDA a mano:
+#   .venv/Scripts/pip install torch==2.8.0+cu126 --index-url https://download.pytorch.org/whl/cu126
+# Arrancar el servidor (puerto 8880), desde vendor/Kokoro-FastAPI:
+#   $env:PHONEMIZER_ESPEAK_LIBRARY = 'C:\Program Files\eSpeak NG\libespeak-ng.dll'
+#   $env:USE_GPU = 'true'; $env:PYTHONUTF8 = '1'
+#   $env:MODEL_DIR = 'src/models'; $env:VOICES_DIR = 'src/voices/v1_0'
+#   $env:PYTHONPATH = '.'; $env:WEB_PLAYER_PATH = 'web'
+#   .venv/Scripts/uvicorn.exe api.src.main:app --host 0.0.0.0 --port 8880
+# Listo cuando el log dice "Application startup complete" y "Model warmed
+# up on cuda: kokoro_v1".
+#
+# main.py le habla por HTTP a través de services/kokoro_gpu_tts.py (no usa
+# `OpenAITTSService` de pipecat: esa clase valida el nombre de voz contra
+# una whitelist fija de OpenAI y rechaza voces de Kokoro como "ef_dora").
+#
+# Voz: ef_dora (español). af_heart (default de Kokoro) es inglés (EEUU) y
+# suena como "americano hablando español" -- las 3 voces en español
+# disponibles son ef_dora (mujer), em_alex y em_santa (hombre).
 pyaudio
 numpy
 soundfile
@@ -53,3 +84,6 @@ websockets
 #   setx GROQ_API_KEY "gsk_..."   (PowerShell: reabrir terminal después)
 # Se eligió cloud en vez de un LLM local (LM Studio) porque competía por VRAM
 # con el servidor R2T2 (vLLM) en la misma GPU.
+# gpt-oss-120b es un modelo "reasoning": sin reasoning_effort="low" gasta
+# casi todo max_completion_tokens pensando y devuelve respuestas de 1
+# palabra. Ver system2_llm en main.py (extra={"reasoning_effort": "low"}).
