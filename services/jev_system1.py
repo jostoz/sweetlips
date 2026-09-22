@@ -29,6 +29,10 @@ from actions.local_dispatcher import execute_local_command
 
 _INTERRUPT_WORDS = ("para", "cállate", "callate", "alto", "cancela")
 _ESCALATE_WORDS = ("por qué", "por que", "cómo", "como", "explícame", "explicame", "recomiéndame", "recomiendame")
+# ^ Ya NO se usa para escalar a mitad de frase (ver nota abajo en
+# _evaluate_intent) -- se deja documentado por si se reintroduce algo
+# similar con mejores garantías (ej: sólo si el texto ya tiene >N
+# palabras, o sólo al inicio del turno).
 
 
 class JevSystem1Processor(FrameProcessor):
@@ -154,7 +158,12 @@ class JevSystem1Processor(FrameProcessor):
         if "apaga" in text and "luz" in text:
             return {"type": "LOCAL_ACTION", "action": "TURN_OFF", "target": "LIGHTS"}
 
-        if any(word in text for word in _ESCALATE_WORDS):
-            return {"type": "ESCALATE_SYSTEM_2"}
+        # Antes escalaba a System 2 apenas aparecía una palabra tipo "cómo"
+        # en el texto acumulado, SIN esperar a que el usuario terminara de
+        # hablar -- eso disparaba el LLM con fragmentos truncados a mitad
+        # de oración ("día, cómo" en vez de la pregunta completa), y el
+        # resto de la transcripción que seguía llegando se perdía. La
+        # escalada por defecto en _handle_turn_end (fin de turno real, vía
+        # VADUserStoppedSpeakingFrame) ya cubre esto sin ese riesgo.
 
         return {"type": "PENDING"}

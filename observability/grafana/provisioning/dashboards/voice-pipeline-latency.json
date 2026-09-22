@@ -18,17 +18,17 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum(rate(voice_pipeline_stage_latency_seconds_bucket{stage=\"bot empieza a hablar (audio real)\"}[$__rate_interval])) by (le))",
+          "expr": "histogram_quantile(0.50, sum(rate(voice_pipeline_stage_latency_seconds_bucket{stage=\"bot empieza a hablar (audio real)\"}[10m])) by (le))",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.95, sum(rate(voice_pipeline_stage_latency_seconds_bucket{stage=\"bot empieza a hablar (audio real)\"}[$__rate_interval])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(voice_pipeline_stage_latency_seconds_bucket{stage=\"bot empieza a hablar (audio real)\"}[10m])) by (le))",
           "legendFormat": "p95",
           "refId": "B"
         },
         {
-          "expr": "histogram_quantile(0.99, sum(rate(voice_pipeline_stage_latency_seconds_bucket{stage=\"bot empieza a hablar (audio real)\"}[$__rate_interval])) by (le))",
+          "expr": "histogram_quantile(0.99, sum(rate(voice_pipeline_stage_latency_seconds_bucket{stage=\"bot empieza a hablar (audio real)\"}[10m])) by (le))",
           "legendFormat": "p99",
           "refId": "C"
         }
@@ -45,12 +45,12 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum(rate(voice_pipeline_stage_latency_seconds_bucket{stage=\"LLM: primer token\"}[$__rate_interval])) by (le))",
+          "expr": "histogram_quantile(0.50, sum(rate(voice_pipeline_stage_latency_seconds_bucket{stage=\"LLM: primer token\"}[10m])) by (le))",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.95, sum(rate(voice_pipeline_stage_latency_seconds_bucket{stage=\"LLM: primer token\"}[$__rate_interval])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(voice_pipeline_stage_latency_seconds_bucket{stage=\"LLM: primer token\"}[10m])) by (le))",
           "legendFormat": "p95",
           "refId": "B"
         }
@@ -67,12 +67,12 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum(rate(voice_pipeline_stage_latency_seconds_bucket{stage=\"LLM: respuesta completa\"}[$__rate_interval])) by (le))",
+          "expr": "histogram_quantile(0.50, sum(rate(voice_pipeline_stage_latency_seconds_bucket{stage=\"LLM: respuesta completa\"}[10m])) by (le))",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.95, sum(rate(voice_pipeline_stage_latency_seconds_bucket{stage=\"LLM: respuesta completa\"}[$__rate_interval])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(voice_pipeline_stage_latency_seconds_bucket{stage=\"LLM: respuesta completa\"}[10m])) by (le))",
           "legendFormat": "p95",
           "refId": "B"
         }
