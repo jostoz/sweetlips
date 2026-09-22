@@ -3,12 +3,18 @@
 # nunca llega al final del pipeline incluso en un pipeline mínimo de un solo
 # processor (PipelineTask/WorkerRunner se cuelgan en el timeout de setup).
 pipecat-ai[kokoro]==1.9.0
-# `pipecat-ai[kokoro]` instala `onnxruntime` (CPU-only). Reemplazar por
-# onnxruntime-directml para que Kokoro TTS corra en GPU (DirectML, funciona
-# con cualquier GPU DX12 en Windows, no requiere CUDA/cuDNN exactos como
-# onnxruntime-gpu). Medido: bajó la latencia de "LLM listo -> audio real"
-# de ~3.5s a mucho menos corriendo en GPU en vez de CPU.
-#   pip uninstall onnxruntime -y && pip install onnxruntime-directml
+# `pipecat-ai[kokoro]` instala `onnxruntime` (CPU). Probamos acelerar Kokoro
+# TTS por GPU y ninguna opción funcionó en este Windows:
+#   - onnxruntime-directml: crashea con "ConvTranspose" (ISTFTNet de Kokoro
+#     no es compatible con ese backend) -> tira el TTS entero a "unusable"
+#     tras 3 fallos.
+#   - onnxruntime-gpu (CUDA): tira "cublasLt64_13.dll" faltante aunque
+#     nvidia-cublas/nvidia-cudnn-cu13 estén instalados y el DLL cargue bien
+#     standalone — onnxruntime no honra `os.add_dll_directory` para su
+#     propio provider de CUDA en esta versión/plataforma.
+# Quedamos en CPU (`onnxruntime~=1.24.3`, pineado a lo que pide pipecat):
+# ~1-1.3s de síntesis por respuesta corta, estable, sin crashes.
+onnxruntime~=1.24.3
 pyaudio
 numpy
 soundfile
