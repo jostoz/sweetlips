@@ -82,7 +82,7 @@ async def main():
         # "localhost" resuelve primero a IPv6 (::1), que no responde, y
         # requests/urllib3 tarda ~2s en caer a IPv4 antes de conectar.
         ws_uri="ws://127.0.0.1:8272/asr_stream_api_v1",
-        language="Spanish",  # forzado: evita el modo bilingüe zh/en por defecto.
+        language="English",  # prueba: R2T2 puede estar mejor optimizado en inglés que español (README oficial: "Optimized for Chinese and English").
         # Hotwords (system_prompt) REVERTIDO: confirmado en vivo por el
         # usuario que causaba alucinaciones -- el modelo "escuchaba"
         # exactamente la lista de hotwords completa ("cállate, detente,

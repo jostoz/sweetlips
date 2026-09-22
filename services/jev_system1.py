@@ -90,6 +90,17 @@ class JevSystem1Processor(FrameProcessor):
         """Referencia opcional a ConfuciusR2T2Service: si está seteada, se
         le pide flush_final() antes de escalar (ver _debounced_turn_end)
         para no perder la cola de la última palabra dicha."""
+        self._mute_watch_text = ""
+        """Buffer separado de confirmed_text, usado SOLO para detectar
+        interrupción mientras el bot habla. confirmed_text se resetea
+        por delta durante el mute (para no filtrar eco a un turno real
+        después) -- pero eso rompía la detección de interrupción cuando
+        R2T2 parte la palabra en varios deltas ("cállate" -> "Cá"+"ll"+
+        "ate"): cada fragmento se revisaba aislado y nunca matcheaba.
+        Este buffer sí acumula entre deltas (acotado a los últimos 40
+        caracteres) para poder detectar la palabra completa aunque
+        llegue partida, sin arriesgar que texto de eco se filtre al
+        turno real (nunca se usa para escalar, solo para este chequeo)."""
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -190,9 +201,18 @@ class JevSystem1Processor(FrameProcessor):
             # mismo ("se está escuchando otra vez", confirmado en vivo).
             # Vuelta a la regla segura: mientras el bot habla, ignoramos
             # todo salvo un barge-in explícito.
-            if _has_interrupt_word(normalized):
+            #
+            # confirmed_text se resetea por delta (no filtrar eco a un
+            # turno real), pero eso rompía la detección de interrupción
+            # cuando R2T2 parte la palabra en varios deltas ("cállate"
+            # -> "Cá"+"ll"+"ate": cada fragmento revisado aislado nunca
+            # matcheaba con confirmed_text solo). _mute_watch_text sí
+            # acumula entre deltas (acotado) para cubrir ese caso.
+            self._mute_watch_text = (self._mute_watch_text + frame.text)[-40:]
+            if _has_interrupt_word(self._mute_watch_text.lower()):
                 print("[Jev] -> interrupción detectada, cortando TTS", flush=True)
                 await self.broadcast_interruption()
+                self._mute_watch_text = ""
             self.confirmed_text = ""
             return
 
