@@ -19,6 +19,7 @@ from pipecat.frames.frames import (
     Frame,
     TextFrame,
     TranscriptionFrame,
+    TTSSpeakFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
@@ -207,8 +208,15 @@ class JevSystem1Processor(FrameProcessor):
             result_speech = execute_local_command(decision["action"], decision["target"])
             print(f'[Jev] -> acción local: {decision["action"]} {decision["target"]} => "{result_speech}"', flush=True)
             self.confirmed_text = ""
-            # Respuesta directa al TTS, sin pasar por el LLM (System 2).
-            await self.push_frame(TextFrame(text=result_speech), direction)
+            # TTSSpeakFrame (no TextFrame): habla directo sin pasar por
+            # System2PromptBridge. Bug real encontrado en vivo: con
+            # TextFrame, System2PromptBridge lo interceptaba como si
+            # fuera texto del USUARIO (mismo chequeo que usa para el
+            # texto escalado por _escalate) y lo re-enviaba al LLM como
+            # un mensaje nuevo -- "Luces encendidas." terminaba
+            # preguntándole al LLM "¿por qué dijiste eso?", generando
+            # respuestas sin sentido y latencia extra en cascada.
+            await self.push_frame(TTSSpeakFrame(text=result_speech), direction)
             return
 
         if decision["type"] == "ESCALATE_SYSTEM_2":
