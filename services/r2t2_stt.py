@@ -127,18 +127,19 @@ class ConfuciusR2T2Service(STTService):
 
         Protocolo (ver docstring del módulo): mandar el string literal EOS
         fuerza al servidor a mandar el delta final y cerrar la conexión.
-        Cierra la conexión actual y drena lo que haya llegado.
+        Cierra la conexión actual, drena lo que haya llegado, y reabre.
 
-        A propósito NO reabre acá: reabrir en el mismo instante en que el
-        usuario termina de hablar deja a la conexión nueva "fría" justo
-        cuando el usuario típicamente ya está arrancando su próxima frase
-        (medido en vivo: se perdía sistemáticamente el arranque de la
-        frase siguiente, "caer de" en vez de lo que realmente se dijo).
-        `_process_assistant_turn` (hook de STTService, dispara solo
-        después de la respuesta completa del bot) ya se encarga de
-        reabrir -- eso da todo el tiempo que tarda el bot en responder y
-        hablar como margen de "calentamiento" antes de que el usuario
-        vuelva a hablar, en vez de cero margen.
+        Nota: se probó NO reabrir acá (delegarle la reconexión al hook
+        `_process_assistant_turn` de STTService, esperando que dispare
+        después de la respuesta del bot) para darle más tiempo de
+        "calentamiento" a la conexión nueva -- causó una regresión MUCHO
+        peor: ese hook nunca dispara en esta arquitectura (usamos
+        System2PromptBridge/ResponseCollector propios, no el
+        LLMContextAggregatorPair estándar de pipecat del que probablemente
+        depende), así que R2T2 quedaba desconectado para siempre después
+        del primer turno -- el bot dejaba de contestar por completo. Se
+        revierte a reabrir siempre acá, que es menos elegante pero
+        confiable.
         """
         if self._ws is None:
             return ""
@@ -160,6 +161,7 @@ class ConfuciusR2T2Service(STTService):
         while not self._pending.empty():
             final_chunks.append(self._pending.get_nowait())
 
+        await self._open_turn()
         return "".join(final_chunks)
 
     async def _receiver_loop(self) -> None:
