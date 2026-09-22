@@ -63,15 +63,14 @@ async def main():
         vad_analyzer=FireRedVADAnalyzer(
             params=VADParams(
                 # 0.2s (default) corta la frase en pedacitos con cualquier
-                # micro-pausa/respiración natural. Bajado a 0.5s en un
-                # momento para ganar latencia, pero el patrón real en vivo
-                # fue: se pierde sistemáticamente la palabra clave justo
-                # después de una preposición ("historia de", "ciudad de",
-                # "sabes algo de", siempre cortado ahí) -- el usuario hace
-                # una micro-pausa pensando la palabra siguiente y el turno
-                # se da por terminado antes de tiempo. Vuelta a 0.7s:
-                # precisión > unos ms de latencia.
-                stop_secs=0.7,
+                # micro-pausa/respiración natural. Con smart-turn activo
+                # (ver services/jev_system1.py) el VAD ya NO tiene que ser
+                # el que decide "¿terminó de verdad?" -- solo necesita
+                # detectar que hubo silencio para disparar el análisis
+                # semántico. Bajado de 0.7s a 0.4s: el modelo es el que
+                # ahora filtra los falsos cortes (INCOMPLETE si a mitad de
+                # idea), así que no hace falta que el VAD sea conservador.
+                stop_secs=0.4,
             )
         )
     )  # Capa 0: VAD acústico (FireRedVAD streaming).
