@@ -17,6 +17,7 @@ la segmentación de turnos que ya hace Jev/System 1). En su lugar:
 from __future__ import annotations
 
 from pipecat.frames.frames import (
+    ErrorFrame,
     Frame,
     LLMContextFrame,
     LLMFullResponseEndFrame,
@@ -54,12 +55,26 @@ def build_shared_context(system_prompt: str = DEFAULT_SYSTEM_PROMPT) -> LLMConte
 class System2PromptBridge(FrameProcessor):
     """Convierte el `TextFrame` escalado por Jev en un turno de LLM."""
 
+    _FALLBACK_TEXT = "Perdón, no entendí bien. ¿Podés repetir?"
+    """Groq/gpt-oss-120b tiene un bug conocido (reportado en vLLM, LangChain,
+    HF) donde a veces el streaming de razonamiento rompe el parser de la
+    respuesta y el turno se pierde por completo -- el ErrorFrame viaja
+    río arriba (`push_error_frame`) y nunca llega al TTS, así que sin este
+    fallback el usuario se queda en silencio total, indistinguible de que
+    el sistema no le respondió nada."""
+
     def __init__(self, context: LLMContext, **kwargs):
         super().__init__(**kwargs)
         self._context = context
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
+
+        if isinstance(frame, ErrorFrame) and direction == FrameDirection.UPSTREAM:
+            print(f"[System2] LLM falló ({frame.error}) -> fallback hablado", flush=True)
+            await self.push_frame(TextFrame(text=self._FALLBACK_TEXT), FrameDirection.DOWNSTREAM)
+            await self.push_frame(frame, direction)
+            return
 
         if isinstance(frame, TextFrame) and not isinstance(frame, LLMTextFrame):
             self._context.add_message({"role": "user", "content": frame.text})

@@ -89,15 +89,18 @@ async def main():
     system2_prompt_bridge = System2PromptBridge(system2_context)
     system2_llm = OpenAILLMService(
         settings=OpenAILLMService.Settings(
-            model="openai/gpt-oss-120b",
-            # gpt-oss-120b es un modelo "reasoning": gasta tokens internos
-            # pensando antes de contestar. Con max_completion_tokens=60 y
-            # razonamiento en default, el pensamiento se comía casi todo
-            # el presupuesto y dejaba respuestas de 1 letra ("P", "¿Sí?").
-            # reasoning_effort=low reduce ese pensamiento interno; subimos
-            # el límite para dejar margen real a la respuesta hablada.
-            max_completion_tokens=150,
-            extra={"reasoning_effort": "low"},
+            # qwen/qwen3.8-27b en vez de openai/gpt-oss-120b: medido 3x más
+            # rápido (~220ms vs ~630ms) y SIN tokens de razonamiento -- oss-120b
+            # es un modelo "reasoning" que se come el presupuesto de tokens
+            # pensando (llegó a dejar respuestas de 1 letra, o vacías del
+            # todo con oss-20b: 148/150 tokens gastados en razonamiento) y
+            # tiene un bug conocido (reportado en vLLM/LangChain/HF) donde
+            # el streaming del razonamiento rompe el parser de Groq y el
+            # turno se pierde entero ("Parsing failed", visto en vivo en
+            # esta sesión). qwen3.8-27b no es reasoning: no tiene ninguno
+            # de los dos problemas.
+            model="qwen/qwen3.8-27b",
+            max_completion_tokens=80,
         ),
         api_key=os.environ["GROQ_API_KEY"],
         base_url="https://api.groq.com/openai/v1",
