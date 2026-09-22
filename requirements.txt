@@ -56,6 +56,16 @@ torch
 # Ver observability/ para el stack Prometheus + Grafana (docker compose).
 prometheus-client
 
+# Router semántico fast/slow de Jev (services/semantic_jev_router.py):
+# aurelio-labs/semantic-router + fastembed (encoder ONNX local, BAAI/
+# bge-small-en-v1.5, sin API key, sin red). Reemplaza la heurística de
+# keywords/largo de frase, que no generalizaba (bug real: "Make analysis
+# of..." no matcheaba ninguna keyword y cortaba la respuesta). ~1.5-2s de
+# carga del modelo la primera vez (cacheado luego en
+# %LOCALAPPDATA%/Temp/fastembed_cache), ~25-65ms por utterance evaluada.
+semantic-router
+fastembed
+
 # AEC (cancelación de eco acústico, WebRTC AEC3) para poder usar parlantes
 # en vez de auriculares sin que el sistema se re-transcriba a sí mismo.
 # Ver services/aec_filter.py. La señal far-end (referencia de lo que suena

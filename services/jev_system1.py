@@ -31,6 +31,7 @@ from pipecat.audio.turn.base_turn_analyzer import BaseTurnAnalyzer, EndOfTurnSta
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from services import latency_probe
+from services import semantic_jev_router
 
 from actions.local_dispatcher import execute_local_command
 
@@ -65,23 +66,6 @@ _SLOW_PATH_TAG = "[DETAILED_ANSWER]"
 # Prefijo interno agregado al TextFrame para pedirle al LLM que ignore el
 # límite de una frase (ver DEFAULT_SYSTEM_PROMPT_EN en system2_llm.py).
 
-_SLOW_PATH_KEYWORDS = (
-    "explain in detail", "in depth", "walk me through", "compare",
-    "pros and cons", "step by step", "elaborate", "in detail",
-    "analysis", "analyze", "analyse",
-)
-# Heurística de FXPerto (fx_fast_slow_system.py QueryRouter) adaptada: sin
-# LLM extra para decidir (0ms, no agrega latencia al camino rápido).
-# "analysis"/"analyze" agregado en vivo: "Make analysis of the two
-# principal ideologues, capitalism and socialism" (10 palabras, sin
-# match) cayó al fast path con max_completion_tokens=55 y salió
-# truncada/rota ("It looks like your message got cut").
-
-_SLOW_PATH_MIN_WORDS = 9
-# Bajado de 12 a 9: el mismo caso real de arriba tenía 10 palabras y
-# no llegaba al umbral -- 9 sigue sin agarrar preguntas cortas simples
-# ("what time is it", "turn on the light") pero sí frases como "Make
-# analysis of the two principal ideologues, capitalism and socialism".
 _SLOW_PATH_CHIME_SAMPLE_RATE = 24000
 
 
@@ -109,13 +93,15 @@ def _generate_chime(sample_rate: int) -> bytes:
 
 _SLOW_PATH_CHIME_AUDIO = _generate_chime(_SLOW_PATH_CHIME_SAMPLE_RATE)
 
-
-def _is_slow_path(text: str) -> bool:
-    words = text.split()
-    if len(words) >= _SLOW_PATH_MIN_WORDS:
-        return True
-    lower = text.lower()
-    return any(kw in lower for kw in _SLOW_PATH_KEYWORDS)
+# _is_slow_path ya NO es keyword/largo-de-frase: la heurística de keywords
+# no generalizaba (bug real en vivo: "Make analysis of the two principal
+# ideologues, capitalism and socialism" no matcheaba ninguna keyword y cayó
+# al fast path truncado). Ahora usa `semantic_jev_router.is_slow_path`,
+# matching semántico local (FastEmbedEncoder, sin API/red) que generaliza a
+# paráfrasis nunca vistas. Se llama una sola vez por turno en _escalate()
+# (no por delta): ~30-60ms medidos, insignificante contra el presupuesto
+# de ~400-500ms del turno completo -- correrlo por delta sí sería costoso.
+_is_slow_path = semantic_jev_router.is_slow_path
 
 
 
@@ -178,6 +164,12 @@ class JevSystem1Processor(FrameProcessor):
         await super().setup(setup)
         if self._smart_turn is not None:
             self._smart_turn.set_sample_rate(self._sample_rate)
+        # Precarga el encoder ONNX del router semántico (~1.5-2s la primera
+        # vez, descarga+carga del modelo) acá, no en el primer turno real --
+        # sin esto, la primera vez que alguien escala a slow path esperaría
+        # ese delay entero antes de que suene el chime. run_in_executor:
+        # es una llamada bloqueante (CPU-bound, carga de modelo), no async.
+        await asyncio.get_event_loop().run_in_executor(None, semantic_jev_router.warm_up)
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
