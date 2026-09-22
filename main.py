@@ -43,7 +43,10 @@ async def main():
     # Servidor R2T2 corriendo dentro de WSL2 (ver README/ws): vLLM no soporta
     # Windows nativo, por eso el motor vive en Linux y este cliente le habla
     # por WebSocket. Arrancar antes: wsl -e bash -lc "cd ~/Confucius4-R2T2 && ./run_start_server.sh start --model_path ~/models/Confucius4-R2T2"
-    r2t2_stt = ConfuciusR2T2Service(ws_uri="ws://localhost:8272/asr_stream_api_v1")
+    r2t2_stt = ConfuciusR2T2Service(
+        ws_uri="ws://localhost:8272/asr_stream_api_v1",
+        language="Spanish",  # forzado: evita el modo bilingüe zh/en por defecto.
+    )
     jev_router = JevSystem1Processor()
 
     # Capa 3: System 2 (razonamiento). LM Studio expone un servidor
@@ -75,6 +78,12 @@ async def main():
             transport.output(),  # Altavoz físico.
         ]
     )
+
+    task = PipelineTask(pipeline, enable_rtvi=False)
+    runner = PipelineRunner()
+
+    print("\n[Listo] El agente de voz Edge está escuchando... (Ctrl+C para salir)\n")
+    await runner.run(task)
 
 
 if __name__ == "__main__":

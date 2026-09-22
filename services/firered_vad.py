@@ -30,8 +30,12 @@ except ModuleNotFoundError as e:
     )
     raise ImportError(f"Missing module: {e}") from e
 
-# fireredvad.core.constants: 16 kHz, ventana 25 ms, salto 10 ms.
-_FRAME_SHIFT_SAMPLE = 160  # 10 ms a 16 kHz; frecuencia con la que pedimos confianza.
+# fireredvad.core.constants: 16 kHz, ventana (frame_length) 25 ms, salto 10 ms.
+# La ventana mínima que el extractor kaldi-fbank necesita para emitir al
+# menos 1 frame es FRAME_LENGTH_SAMPLE (25 ms); pedirle menos (p.ej. el hop
+# de 10 ms) revienta con "zero channel inputs" porque no completa ni una
+# ventana de análisis.
+_FRAME_LENGTH_SAMPLE = 400  # 25 ms a 16 kHz.
 
 
 class FireRedVADAnalyzer(VADAnalyzer):
@@ -65,8 +69,9 @@ class FireRedVADAnalyzer(VADAnalyzer):
         super().set_sample_rate(sample_rate)
 
     def num_frames_required(self) -> int:
-        # Alineado con el hop de 10 ms (FRAME_SHIFT_SAMPLE) del extractor de features.
-        return _FRAME_SHIFT_SAMPLE
+        # 25 ms por llamada: mínimo que el extractor de features necesita
+        # para producir al menos un frame válido.
+        return _FRAME_LENGTH_SAMPLE
 
     def voice_confidence(self, buffer: bytes) -> float:
         try:

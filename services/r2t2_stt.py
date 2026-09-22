@@ -35,6 +35,7 @@ from loguru import logger
 from websockets.asyncio.client import connect as ws_connect
 
 from pipecat.frames.frames import Frame, TranscriptionFrame
+from pipecat.services.settings import STTSettings
 from pipecat.services.stt_service import STTService
 
 _EOS = "YOUDAO_ONETIME_ASR_STREAM_EOS"
@@ -52,7 +53,10 @@ class ConfuciusR2T2Service(STTService):
         use_vad: bool = False,
         **kwargs,
     ):
-        super().__init__(**kwargs)
+        super().__init__(
+            settings=STTSettings(model="Confucius4-R2T2", language=language),
+            **kwargs,
+        )
         self.ws_uri = ws_uri
         self.secret_key = secret_key
         self.language = language
