@@ -79,6 +79,13 @@ async def main():
         # requests/urllib3 tarda ~2s en caer a IPv4 antes de conectar.
         ws_uri="ws://127.0.0.1:8272/asr_stream_api_v1",
         language="Spanish",  # forzado: evita el modo bilingüe zh/en por defecto.
+        # Hotwords (campo system_prompt del protocolo, ver README oficial):
+        # ayuda a R2T2 a reconocer mejor/más rápido las palabras que Jev
+        # usa para decisiones críticas de baja latencia (interrupción,
+        # acciones locales) -- son justo las que más duele perder por el
+        # trade-off latencia/estabilidad del modelo (paradigma "Longest
+        # Stable Prefix": corta bordes de palabra por diseño).
+        system_prompt="cállate, detente, silencio, cancela, enciende la luz, apaga la luz",
     )
     jev_router = JevSystem1Processor(r2t2_stt=r2t2_stt)
 

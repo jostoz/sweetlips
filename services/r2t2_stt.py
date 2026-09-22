@@ -51,6 +51,7 @@ class ConfuciusR2T2Service(STTService):
         language: str = "zhen",
         chunk_size_ms: int = 160,
         use_vad: bool = False,
+        system_prompt: str = "",
         **kwargs,
     ):
         super().__init__(
@@ -62,6 +63,12 @@ class ConfuciusR2T2Service(STTService):
         self.language = language
         self.chunk_size_ms = chunk_size_ms
         self.use_vad = use_vad
+        self.system_prompt = system_prompt
+        """Contexto/hotwords opcional (campo `system_prompt` del header del
+        protocolo, ver README oficial de Confucius4-R2T2: mejora el
+        reconocimiento de palabras/frases específicas -- útil para
+        palabras de interrupción y comandos que necesitan reconocerse
+        rápido y sin ambigüedad."""
 
         self._audio_buffer = bytearray()
         self._ws = None
@@ -88,6 +95,8 @@ class ConfuciusR2T2Service(STTService):
             "use_vad": self.use_vad,
             "mode": "slow",
         }
+        if self.system_prompt:
+            header["system_prompt"] = self.system_prompt
         await self._ws.send(json.dumps(header))
 
         ack_raw = await self._ws.recv()
