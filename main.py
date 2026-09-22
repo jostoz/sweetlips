@@ -46,11 +46,13 @@ async def main():
             # verificado funcional). El Realtek USB Audio aparecía
             # desconectado ("Unknown" en Device Manager) al probarlo.
             audio_in_sample_rate=16000,
-            # AEC (WebRTC AEC3): cancela el eco del propio parlante para
-            # poder usar altavoces en vez de auriculares, como un smart
-            # speaker. Necesita la señal de referencia (far_end_tap más
-            # abajo, antes de transport.output()).
-            audio_in_filter=WebRTCAECFilter(far_end_buffer),
+            # AEC (WebRTC AEC3) desactivado: degradaba la calidad de audio
+            # que le llega a R2T2 (transcripciones basura tipo "con
+            # misaventOh yes,"), incluso con el bypass de silencio. Queda
+            # el código en services/aec_filter.py para retomar en otra
+            # sesión con más tiempo de calibración. Mientras tanto: usar
+            # auriculares para evitar que el mic capte al propio TTS.
+            audio_in_filter=None,
         )
     )
 
