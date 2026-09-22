@@ -166,14 +166,15 @@ class JevSystem1Processor(FrameProcessor):
         normalized = self.confirmed_text.strip().lower()
 
         if self._bot_speaking:
-            # Mientras el bot habla, ignoramos todo salvo un barge-in
-            # explícito: evita que el TTS se re-transcriba a sí mismo por
-            # acople acústico (sin auriculares) y dispare otra escalada.
-            if any(word in normalized for word in _INTERRUPT_WORDS):
-                print("[Jev] -> interrupción detectada, cortando TTS", flush=True)
-                await self.broadcast_interruption()
-            self.confirmed_text = ""
-            return
+            # Antes: ignorábamos TODO acá (salvo interrupción explícita)
+            # para evitar que el TTS se re-transcribiera a sí mismo por
+            # acople acústico sin auriculares. Ahora que el AEC (WASAPI
+            # loopback, ver services/aec_filter.py) limpia el eco antes de
+            # que llegue a R2T2, confiamos en que lo que se transcribe acá
+            # es genuino y lo dejamos acumular normal -- si el AEC no
+            # cancela perfecto y vuelve a aparecer auto-interrupción, hay
+            # que revertir este bloque a ignorar todo salvo interrupt words.
+            pass
 
         # 1. Reflejo de interrupción (barge-in): corta System 2/TTS al instante.
         if any(word in normalized for word in _INTERRUPT_WORDS):
