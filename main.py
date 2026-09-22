@@ -26,7 +26,7 @@ from pipecat.processors.audio.vad_processor import VADProcessor
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
 
-from services.aec_filter import FarEndBuffer, FarEndTapProcessor, WebRTCAECFilter
+from services.aec_filter import FarEndBuffer, WasapiLoopbackCapture, WebRTCAECFilter
 from services.firered_vad import FireRedVADAnalyzer
 from services.jev_system1 import JevSystem1Processor
 from services.kokoro_gpu_tts import KokoroGPUTTSService
@@ -48,13 +48,12 @@ async def main():
             # verificado funcional). El Realtek USB Audio aparecía
             # desconectado ("Unknown" en Device Manager) al probarlo.
             audio_in_sample_rate=16000,
-            # AEC (WebRTC AEC3) desactivado: degradaba la calidad de audio
-            # que le llega a R2T2 (transcripciones basura tipo "con
-            # misaventOh yes,"), incluso con el bypass de silencio. Queda
-            # el código en services/aec_filter.py para retomar en otra
-            # sesión con más tiempo de calibración. Mientras tanto: usar
-            # auriculares para evitar que el mic capte al propio TTS.
-            audio_in_filter=None,
+            # AEC (WebRTC AEC3) con referencia real por WASAPI loopback (ver
+            # services/aec_filter.py) -- el primer intento (tapear frames
+            # del pipeline de TTS) tenía un delay far-end impredecible y
+            # degradaba el audio; el loopback captura lo que realmente
+            # suena por el hardware, mismo dominio de tiempo que el mic.
+            audio_in_filter=WebRTCAECFilter(far_end_buffer),
         )
     )
 
@@ -115,7 +114,8 @@ async def main():
         # trae Kokoro (ef_dora, em_alex, em_santa).
         voice="ef_dora",
     )
-    far_end_tap = FarEndTapProcessor(far_end_buffer)  # alimenta la señal de referencia del AEC.
+    loopback_capture = WasapiLoopbackCapture(far_end_buffer)
+    await loopback_capture.start()  # referencia far-end real (WASAPI loopback) para el AEC.
 
     # 3. Pipeline.
     pipeline = Pipeline(
@@ -128,7 +128,6 @@ async def main():
             system2_llm,  # Capa 3b: LLM cloud (Groq, OpenAI-compatible).
             system2_response_collector,  # Capa 3c: guarda la respuesta en el contexto.
             tts,  # Capa 4: streaming TTS.
-            far_end_tap,  # Captura lo que va a sonar, para el AEC.
             transport.output(),  # Altavoz físico.
         ]
     )
@@ -137,7 +136,10 @@ async def main():
     runner = PipelineRunner()
 
     print("\n[Listo] El agente de voz Edge está escuchando... (Ctrl+C para salir)\n")
-    await runner.run(task)
+    try:
+        await runner.run(task)
+    finally:
+        await loopback_capture.stop()
 
 
 if __name__ == "__main__":

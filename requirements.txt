@@ -58,8 +58,17 @@ prometheus-client
 
 # AEC (cancelación de eco acústico, WebRTC AEC3) para poder usar parlantes
 # en vez de auriculares sin que el sistema se re-transcriba a sí mismo.
-# Ver services/aec_filter.py.
+# Ver services/aec_filter.py. La señal far-end (referencia de lo que suena
+# por el parlante) se captura con WASAPI loopback real (pyaudiowpatch),
+# NO tapeando frames del pipeline de TTS -- el primer intento con eso
+# tenía un delay impredecible (colas internas de TTS) y degradaba el
+# audio. pip install de pyaudiowpatch puede colgarse si "pypi.org"
+# resuelve a una ruta IPv6 muerta en esta red (mismo bug que
+# localhost); si pip se cuelga, bajar el .whl con curl directo de
+# https://pypi.org/pypi/pyaudiowpatch/json e instalar con
+# `pip install --no-index <archivo>.whl`.
 pywebrtc-audio
+pyaudiowpatch
 
 # Cliente WebSocket hacia el servidor R2T2 (que corre en WSL2, ver más abajo).
 websockets

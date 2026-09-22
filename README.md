@@ -29,10 +29,14 @@ Rama: `pipecat-local-audio-edge`.
 - **TTS**: `services/kokoro_gpu_tts.py`, cliente HTTP a un servidor
   Kokoro-FastAPI separado (PyTorch+CUDA real, no onnxruntime) corriendo en
   `127.0.0.1:8880`. Voz `ef_dora` (español).
-- **AEC**: implementado (`services/aec_filter.py`, WebRTC AEC3) pero
-  **deshabilitado** por defecto (`audio_in_filter=None` en `main.py`) —
-  degradaba la señal limpia en varios intentos. Usar auriculares en vez de
-  parlantes evita el problema de raíz sin necesitar AEC.
+- **AEC**: activo por defecto (`services/aec_filter.py`, WebRTC AEC3).
+  La señal far-end (referencia de lo que suena por el parlante) se
+  captura con WASAPI loopback real (`pyaudiowpatch`) en vez de tapear
+  frames del pipeline de TTS -- el primer intento con eso tenía un delay
+  far-end impredecible (colas internas de TTS) y degradaba el audio
+  limpio. Con loopback el delay es chico y estable (buffers de
+  hardware), permite usar parlantes en vez de auriculares sin que el
+  sistema se re-transcriba a sí mismo.
 
 ## Arrancar (4 procesos: 3 obligatorios + observabilidad opcional)
 
