@@ -62,9 +62,11 @@ async def main():
         vad_analyzer=FireRedVADAnalyzer(
             params=VADParams(
                 # 0.2s (default) corta la frase en pedacitos con cualquier
-                # micro-pausa/respiración natural. 0.7s tolera pausas reales
-                # sin cortar el turno a mitad de oración.
-                stop_secs=0.7,
+                # micro-pausa/respiración natural. 0.5s tolera pausas reales
+                # sin cortar el turno a mitad de oración, con menos tax de
+                # latencia que 0.7s (que se sentía lento: 0.7s de VAD + 0.5s
+                # de debounce en Jev = 1.2s de silencio antes de procesar).
+                stop_secs=0.5,
             )
         )
     )  # Capa 0: VAD acústico (FireRedVAD streaming).

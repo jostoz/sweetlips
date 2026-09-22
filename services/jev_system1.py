@@ -50,14 +50,16 @@ class JevSystem1Processor(FrameProcessor):
     considera que el bot "terminó" (buffer de reproducción), y sin eso el
     mic se re-transcribe a sí mismo justo en ese hueco."""
 
-    _TURN_END_DEBOUNCE_SECS = 0.5
-    """Al detectar VADUserStoppedSpeakingFrame (0.7s de silencio) no
+    _TURN_END_DEBOUNCE_SECS = 0.35
+    """Al detectar VADUserStoppedSpeakingFrame (0.5s de silencio de VAD) no
     escalamos al instante: es común hacer una pausa corta para pensar y
     seguir la misma idea 1-2s después ("pláticame qué lugares conoces
     tú... pláticame qué lugares conoc[es]" se cortaba justo ahí). Con
     este debounce, si el usuario retoma antes de que se cumpla el tiempo
     (VADUserStartedSpeakingFrame), cancelamos la escalada pendiente y
-    seguimos acumulando texto en el mismo turno en vez de perderlo."""
+    seguimos acumulando texto en el mismo turno en vez de perderlo.
+    Bajado de 0.5s a 0.35s: sumado a los 0.5s de VAD, 0.7+0.5s totales se
+    sentía lento para una charla conversacional."""
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
