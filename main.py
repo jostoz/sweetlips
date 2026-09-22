@@ -82,7 +82,14 @@ async def main():
         # "localhost" resuelve primero a IPv6 (::1), que no responde, y
         # requests/urllib3 tarda ~2s en caer a IPv4 antes de conectar.
         ws_uri="ws://127.0.0.1:8272/asr_stream_api_v1",
-        language="English",  # prueba: R2T2 puede estar mejor optimizado en inglés que español (README oficial: "Optimized for Chinese and English").
+        language="Spanish",  # revertido: la prueba con "English" confirmó
+        # que R2T2 transcribe frases MÁS COMPLETAS en inglés, pero rompe
+        # el reconocimiento de los comandos de interrupción/acción, que
+        # están en español ("cállate", "párate" llegaban irreconocibles,
+        # ej. "Para. Hey", con el modelo primeado para inglés). Mientras
+        # los comandos y el LLM sigan en español, R2T2 tiene que estar en
+        # español -- el hallazgo del idioma queda documentado para si
+        # algún día se hace una versión en inglés completa.
         # Hotwords (system_prompt) REVERTIDO: confirmado en vivo por el
         # usuario que causaba alucinaciones -- el modelo "escuchaba"
         # exactamente la lista de hotwords completa ("cállate, detente,
