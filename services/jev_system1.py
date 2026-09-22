@@ -86,12 +86,19 @@ class JevSystem1Processor(FrameProcessor):
                 self._pending_escalate_task = None
             latency_probe.mark("bot empieza a hablar (audio real)")
             self._bot_speaking = True
-            self.confirmed_text = ""
+            # (Ya NO se resetea confirmed_text acá.) `_escalate()` ya lo
+            # vació al armar el turno del LLM, mucho antes de que el bot
+            # empiece a hablar -- resetear de nuevo acá era redundante Y
+            # peligroso: si la respuesta del bot tiene varias oraciones
+            # (TTS separado por frase) y el usuario ya empezó a hablar de
+            # nuevo antes de que termine de sonar la última, un
+            # BotStoppedSpeakingFrame tardío podía borrar lo que el
+            # usuario ya llevaba dicho ("Contame algo sobre el espacio"
+            # se perdía todo salvo "espacio").
             await self.push_frame(frame, direction)
             return
 
         if isinstance(frame, BotStoppedSpeakingFrame):
-            self.confirmed_text = ""
             if self._unmute_task is not None:
                 self._unmute_task.cancel()
             self._unmute_task = asyncio.create_task(self._unmute_after_grace())
@@ -138,7 +145,11 @@ class JevSystem1Processor(FrameProcessor):
         try:
             await asyncio.sleep(self._UNMUTE_GRACE_SECS)
             self._bot_speaking = False
-            self.confirmed_text = ""
+            # (Ya NO se resetea confirmed_text acá, mismo motivo que en
+            # BotStoppedSpeakingFrame: el reset por delta dentro del
+            # branch mute de _handle_transcription ya cubre el caso
+            # legítimo -- resetear acá de más podía borrar texto real que
+            # el usuario ya empezó a decir apenas terminó el grace.)
         except asyncio.CancelledError:
             pass
 

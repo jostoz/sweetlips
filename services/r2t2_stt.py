@@ -176,10 +176,14 @@ class ConfuciusR2T2Service(STTService):
         return int(self.sample_rate * 2 * (self.chunk_size_ms / 1000.0))
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame | None, None]:
-        if self._ws is None:
-            raise RuntimeError("Conexión R2T2 no inicializada; setup() no se ejecutó.")
-
         self._audio_buffer.extend(audio)
+
+        if self._ws is None:
+            # Reconexión en curso (ver flush_final): en vez de tirar error
+            # y perder este chunk, lo dejamos en el buffer -- se manda
+            # apenas la conexión nueva esté lista, en la próxima llamada.
+            return
+
         bytes_needed = self._bytes_per_chunk()
 
         while len(self._audio_buffer) >= bytes_needed:
