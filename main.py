@@ -82,7 +82,13 @@ async def main():
     system2_context = build_shared_context()
     system2_prompt_bridge = System2PromptBridge(system2_context)
     system2_llm = OpenAILLMService(
-        settings=OpenAILLMService.Settings(model="openai/gpt-oss-120b"),
+        settings=OpenAILLMService.Settings(
+            model="openai/gpt-oss-120b",
+            # Forzado: el prompt pide respuestas cortas pero el modelo no
+            # siempre respeta eso (vimos párrafos enteros tipo ensayo).
+            # Un límite duro evita monólogos largos del bot.
+            max_completion_tokens=60,
+        ),
         api_key=os.environ["GROQ_API_KEY"],
         base_url="https://api.groq.com/openai/v1",
     )

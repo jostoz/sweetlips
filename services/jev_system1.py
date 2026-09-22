@@ -11,6 +11,8 @@ Decide, por cada `TranscriptionFrame` confirmado:
 
 from __future__ import annotations
 
+import asyncio
+
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
@@ -32,10 +34,17 @@ _ESCALATE_WORDS = ("por qué", "por que", "cómo", "como", "explícame", "explic
 class JevSystem1Processor(FrameProcessor):
     """Router System 1: interrumpe, resuelve localmente o escala a System 2."""
 
+    _UNMUTE_GRACE_SECS = 0.6
+    """Tiempo extra silenciado tras `BotStoppedSpeakingFrame`: el audio
+    físico sigue sonando por el parlante un rato después de que pipecat
+    considera que el bot "terminó" (buffer de reproducción), y sin eso el
+    mic se re-transcribe a sí mismo justo en ese hueco."""
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.confirmed_text = ""
         self._bot_speaking = False
+        self._unmute_task: asyncio.Task | None = None
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -43,6 +52,9 @@ class JevSystem1Processor(FrameProcessor):
         if isinstance(frame, BotStartedSpeakingFrame):
             # El bot va a hablar: silenciar el ASR para no re-transcribir su
             # propia voz por el micrófono (sin auriculares hay acople).
+            if self._unmute_task is not None:
+                self._unmute_task.cancel()
+                self._unmute_task = None
             latency_probe.mark("bot empieza a hablar (audio real)")
             self._bot_speaking = True
             self.confirmed_text = ""
@@ -50,8 +62,10 @@ class JevSystem1Processor(FrameProcessor):
             return
 
         if isinstance(frame, BotStoppedSpeakingFrame):
-            self._bot_speaking = False
             self.confirmed_text = ""
+            if self._unmute_task is not None:
+                self._unmute_task.cancel()
+            self._unmute_task = asyncio.create_task(self._unmute_after_grace())
             await self.push_frame(frame, direction)
             return
 
@@ -65,6 +79,14 @@ class JevSystem1Processor(FrameProcessor):
             return
 
         await self.push_frame(frame, direction)
+
+    async def _unmute_after_grace(self) -> None:
+        try:
+            await asyncio.sleep(self._UNMUTE_GRACE_SECS)
+            self._bot_speaking = False
+            self.confirmed_text = ""
+        except asyncio.CancelledError:
+            pass
 
     async def _handle_transcription(self, frame: TranscriptionFrame, direction: FrameDirection) -> None:
         # R2T2 emite deltas append-only: el espaciado entre palabras ya viene
