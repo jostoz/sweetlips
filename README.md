@@ -153,6 +153,17 @@ label es dinámico.
   silencio total**: WASAPI no entrega paquetes de un endpoint de render
   idle. Solución: modo callback (PortAudio invoca solo cuando hay audio
   activo, que es justo el caso que importa).
+- **Contención de GPU entre R2T2 (vLLM) y Kokoro-FastAPI**: ambos
+  corren en la misma GPU física (RTX 4090). Con
+  `gpu_memory_utilization=0.80` en R2T2, quedaba solo ~1.4GB libre
+  (confirmado con `nvidia-smi`: 23.1/24.5GB en uso) y la síntesis de
+  Kokoro variaba de forma errática entre 153ms y 2646ms para texto de
+  largo similar -- no por la voz usada, sino por pelearse el turno de
+  GPU con R2T2. Bajado a `gpu_memory_utilization=0.65` (editado en
+  `~/Confucius4-R2T2/ws_server.py` dentro de WSL2, fuera de este repo)
+  para dejarle ~5GB de margen a Kokoro. Si vuelven a aparecer picos de
+  latencia erráticos en el TTS, revisar `nvidia-smi` primero antes de
+  sospechar de la voz/idioma.
 
 ## Referencia: otros modelos ASR/TTS open-source (no usados, no aplica hoy)
 
