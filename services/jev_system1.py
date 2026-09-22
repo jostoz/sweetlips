@@ -11,7 +11,14 @@ Decide, por cada `TranscriptionFrame` confirmado:
 
 from __future__ import annotations
 
-from pipecat.frames.frames import Frame, TextFrame, TranscriptionFrame, VADUserStoppedSpeakingFrame
+from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
+    Frame,
+    TextFrame,
+    TranscriptionFrame,
+    VADUserStoppedSpeakingFrame,
+)
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from actions.local_dispatcher import execute_local_command
@@ -26,9 +33,24 @@ class JevSystem1Processor(FrameProcessor):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.confirmed_text = ""
+        self._bot_speaking = False
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
+
+        if isinstance(frame, BotStartedSpeakingFrame):
+            # El bot va a hablar: silenciar el ASR para no re-transcribir su
+            # propia voz por el micrófono (sin auriculares hay acople).
+            self._bot_speaking = True
+            self.confirmed_text = ""
+            await self.push_frame(frame, direction)
+            return
+
+        if isinstance(frame, BotStoppedSpeakingFrame):
+            self._bot_speaking = False
+            self.confirmed_text = ""
+            await self.push_frame(frame, direction)
+            return
 
         if isinstance(frame, TranscriptionFrame):
             await self._handle_transcription(frame, direction)
@@ -52,6 +74,16 @@ class JevSystem1Processor(FrameProcessor):
         print(f'[Jev] escuchado: "{self.confirmed_text.strip()}"', flush=True)
 
         normalized = self.confirmed_text.strip().lower()
+
+        if self._bot_speaking:
+            # Mientras el bot habla, ignoramos todo salvo un barge-in
+            # explícito: evita que el TTS se re-transcriba a sí mismo por
+            # acople acústico (sin auriculares) y dispare otra escalada.
+            if any(word in normalized for word in _INTERRUPT_WORDS):
+                print("[Jev] -> interrupción detectada, cortando TTS", flush=True)
+                await self.broadcast_interruption()
+            self.confirmed_text = ""
+            return
 
         # 1. Reflejo de interrupción (barge-in): corta System 2/TTS al instante.
         if any(word in normalized for word in _INTERRUPT_WORDS):
