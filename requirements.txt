@@ -3,6 +3,12 @@
 # nunca llega al final del pipeline incluso en un pipeline mínimo de un solo
 # processor (PipelineTask/WorkerRunner se cuelgan en el timeout de setup).
 pipecat-ai[kokoro]==1.9.0
+# `pipecat-ai[kokoro]` instala `onnxruntime` (CPU-only). Reemplazar por
+# onnxruntime-directml para que Kokoro TTS corra en GPU (DirectML, funciona
+# con cualquier GPU DX12 en Windows, no requiere CUDA/cuDNN exactos como
+# onnxruntime-gpu). Medido: bajó la latencia de "LLM listo -> audio real"
+# de ~3.5s a mucho menos corriendo en GPU en vez de CPU.
+#   pip uninstall onnxruntime -y && pip install onnxruntime-directml
 pyaudio
 numpy
 soundfile
