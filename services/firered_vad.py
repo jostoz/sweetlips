@@ -75,10 +75,14 @@ class FireRedVADAnalyzer(VADAnalyzer):
 
     def voice_confidence(self, buffer: bytes) -> float:
         try:
+            # `extract()` espera amplitud int16 real (-32768..32767), NO
+            # normalizada a [-1,1]: el ejemplo oficial (ws_server.py) le pasa
+            # el array int16 directo. Normalizar acá (como hacíamos antes)
+            # producía features ~32768x más chicas de lo esperado y el
+            # modelo nunca reportaba confianza > 0.02 pese a haber voz real.
             audio_int16 = np.frombuffer(buffer, dtype=np.int16)
-            audio_float32 = audio_int16.astype(np.float32) / 32768.0
 
-            frame_results = self._stream_vad.detect_chunk(audio_float32)
+            frame_results = self._stream_vad.detect_chunk(audio_int16)
             if frame_results:
                 # El extractor puede emitir 0 o varios frames de 25 ms por
                 # cada hop de 10 ms recibido; nos quedamos con el más reciente.

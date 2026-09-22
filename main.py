@@ -39,6 +39,9 @@ async def main():
         params=LocalAudioTransportParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
+            # Usa el micrófono default de Windows (Micrófono Steren COM-126,
+            # verificado funcional). El Realtek USB Audio aparecía
+            # desconectado ("Unknown" en Device Manager) al probarlo.
         )
     )
 
