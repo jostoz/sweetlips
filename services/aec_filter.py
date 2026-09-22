@@ -71,6 +71,10 @@ class FarEndBuffer:
             available = available + b"\x00" * (num_bytes - len(available))
         return bytes(available)
 
+    async def pending_bytes(self) -> int:
+        async with self._lock:
+            return len(self._buffer)
+
 
 class FarEndTapProcessor(FrameProcessor):
     """Captura el audio de salida (TTS) y lo vuelca al buffer far-end."""
