@@ -62,11 +62,15 @@ async def main():
         vad_analyzer=FireRedVADAnalyzer(
             params=VADParams(
                 # 0.2s (default) corta la frase en pedacitos con cualquier
-                # micro-pausa/respiración natural. 0.5s tolera pausas reales
-                # sin cortar el turno a mitad de oración, con menos tax de
-                # latencia que 0.7s (que se sentía lento: 0.7s de VAD + 0.5s
-                # de debounce en Jev = 1.2s de silencio antes de procesar).
-                stop_secs=0.5,
+                # micro-pausa/respiración natural. Bajado a 0.5s en un
+                # momento para ganar latencia, pero el patrón real en vivo
+                # fue: se pierde sistemáticamente la palabra clave justo
+                # después de una preposición ("historia de", "ciudad de",
+                # "sabes algo de", siempre cortado ahí) -- el usuario hace
+                # una micro-pausa pensando la palabra siguiente y el turno
+                # se da por terminado antes de tiempo. Vuelta a 0.7s:
+                # precisión > unos ms de latencia.
+                stop_secs=0.7,
             )
         )
     )  # Capa 0: VAD acústico (FireRedVAD streaming).
