@@ -68,15 +68,20 @@ _SLOW_PATH_TAG = "[DETAILED_ANSWER]"
 _SLOW_PATH_KEYWORDS = (
     "explain in detail", "in depth", "walk me through", "compare",
     "pros and cons", "step by step", "elaborate", "in detail",
+    "analysis", "analyze", "analyse",
 )
 # Heurística de FXPerto (fx_fast_slow_system.py QueryRouter) adaptada: sin
 # LLM extra para decidir (0ms, no agrega latencia al camino rápido).
+# "analysis"/"analyze" agregado en vivo: "Make analysis of the two
+# principal ideologues, capitalism and socialism" (10 palabras, sin
+# match) cayó al fast path con max_completion_tokens=55 y salió
+# truncada/rota ("It looks like your message got cut").
 
-_SLOW_PATH_MIN_WORDS = 12
-# Preguntas largas casi siempre piden más que una frase -- tratarlas como
-# slow path evita la regla "una frase" cortando una respuesta que
-# necesitaba desarrollo.
-
+_SLOW_PATH_MIN_WORDS = 9
+# Bajado de 12 a 9: el mismo caso real de arriba tenía 10 palabras y
+# no llegaba al umbral -- 9 sigue sin agarrar preguntas cortas simples
+# ("what time is it", "turn on the light") pero sí frases como "Make
+# analysis of the two principal ideologues, capitalism and socialism".
 _SLOW_PATH_CHIME_SAMPLE_RATE = 24000
 
 
