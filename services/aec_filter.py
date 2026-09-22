@@ -126,9 +126,16 @@ class WebRTCAECFilter(BaseAudioFilter):
             return audio
 
         far = await self._far_end_buffer.read(len(audio))
+        far_arr = np.frombuffer(far, dtype=np.int16)
+
+        if not np.any(far_arr):
+            # No hay nada sonando por el parlante ahora mismo: sin eco que
+            # cancelar. Procesar igual degradaba el audio limpio (medido:
+            # -25% RMS en silencio de far-end), así que devolvemos el audio
+            # del mic sin tocar.
+            return audio
 
         near_arr = np.frombuffer(audio, dtype=np.int16)
-        far_arr = np.frombuffer(far, dtype=np.int16)
 
         try:
             cleaned = self._aec.process(near_arr, far_arr)
