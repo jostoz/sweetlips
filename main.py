@@ -30,11 +30,14 @@ from services.aec_filter import FarEndBuffer, FarEndTapProcessor, WebRTCAECFilte
 from services.firered_vad import FireRedVADAnalyzer
 from services.jev_system1 import JevSystem1Processor
 from services.kokoro_gpu_tts import KokoroGPUTTSService
+from services import latency_probe
 from services.r2t2_stt import ConfuciusR2T2Service
 from services.system2_llm import System2PromptBridge, System2ResponseCollector, build_shared_context
 
 
 async def main():
+    latency_probe.start_metrics_server(port=9091)
+
     # 1. Audio local (micro y altavoz físicos del equipo).
     far_end_buffer = FarEndBuffer()  # señal de referencia para el AEC.
     transport = LocalAudioTransport(

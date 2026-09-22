@@ -51,6 +51,11 @@ numpy
 soundfile
 torch
 
+# Observabilidad: exporta histogramas de latencia por etapa
+# (services/latency_probe.py) en http://127.0.0.1:9091/metrics.
+# Ver observability/ para el stack Prometheus + Grafana (docker compose).
+prometheus-client
+
 # AEC (cancelación de eco acústico, WebRTC AEC3) para poder usar parlantes
 # en vez de auriculares sin que el sistema se re-transcriba a sí mismo.
 # Ver services/aec_filter.py.

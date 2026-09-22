@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: voice-pipeline
+    static_configs:
+      # host.docker.internal: forma estándar de Docker Desktop en Windows
+      # de que un container le hable a un puerto del host. El pipeline
+      # (python main.py) corre nativo en Windows, no en un container.
+      - targets: ["host.docker.internal:9091"]

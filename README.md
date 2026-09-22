@@ -34,7 +34,7 @@ Rama: `pipecat-local-audio-edge`.
   degradaba la señal limpia en varios intentos. Usar auriculares en vez de
   parlantes evita el problema de raíz sin necesitar AEC.
 
-## Arrancar (3 procesos)
+## Arrancar (4 procesos: 3 obligatorios + observabilidad opcional)
 
 ### 1. Servidor R2T2 (WSL2, puerto 8272)
 
@@ -74,6 +74,44 @@ python main.py
 ```
 
 Listo cuando imprime `[Listo] El agente de voz Edge está escuchando...`.
+Expone métricas Prometheus en `http://127.0.0.1:9091/metrics`.
+
+### 4. Observabilidad (Prometheus + Grafana, opcional pero recomendado)
+
+```powershell
+cd observability
+docker compose up -d
+```
+
+- Prometheus: http://localhost:9090 (target `voice-pipeline` -> debe estar `up`)
+- Grafana: http://localhost:3000 (acceso anónimo habilitado como Viewer;
+  admin/admin si querés editar) — dashboard **"Voice Pipeline - Latencia"**
+  provisionado automático, sin pasos manuales.
+
+El pipeline corre nativo en Windows (no en un container) y expone
+`/metrics` en el puerto 9091; Prometheus (en Docker) lo scrapea vía
+`host.docker.internal:9091` (ver `observability/prometheus.yml`).
+
+## Observabilidad: qué mide el dashboard
+
+`services/latency_probe.py` instrumenta cada turno que escala a System 2
+con un histograma Prometheus (`voice_pipeline_stage_latency_seconds`,
+label `stage`), medido desde que Jev decide escalar (t=0) hasta:
+
+- `prompt enviado al LLM (Groq)`
+- `LLM: primer token`
+- `LLM: respuesta completa`
+- `bot empieza a hablar (audio real)` — la métrica end-to-end que importa
+  para "se siente conversacional o no".
+
+El dashboard (`observability/grafana/provisioning/dashboards/voice-pipeline-latency.json`)
+grafica p50/p95/p99 de cada etapa, un stat de p95 end-to-end de los
+últimos 5 minutos, turnos escalados por ventana de 5 minutos, y si
+Prometheus está scrapeando el pipeline (`up`/`down`). Para agregar una
+etapa nueva: llamar `latency_probe.mark("nombre de la etapa")` en el
+processor correspondiente — no hace falta tocar Prometheus/Grafana, el
+label es dinámico.
+
 
 ## Notas / gotchas encontrados
 
