@@ -17,12 +17,14 @@ from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     Frame,
+    InputAudioRawFrame,
     TextFrame,
     TranscriptionFrame,
     TTSSpeakFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
+from pipecat.audio.turn.base_turn_analyzer import BaseTurnAnalyzer, EndOfTurnState
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from services import latency_probe
@@ -80,7 +82,7 @@ class JevSystem1Processor(FrameProcessor):
     ("historia de", "ciudad de" -- pausa pensando, corte antes de tiempo).
     Precisión > latencia."""
 
-    def __init__(self, r2t2_stt=None, **kwargs):
+    def __init__(self, r2t2_stt=None, smart_turn: BaseTurnAnalyzer | None = None, **kwargs):
         super().__init__(**kwargs)
         self.confirmed_text = ""
         self._bot_speaking = False
@@ -101,6 +103,21 @@ class JevSystem1Processor(FrameProcessor):
         caracteres) para poder detectar la palabra completa aunque
         llegue partida, sin arriesgar que texto de eco se filtre al
         turno real (nunca se usa para escalar, solo para este chequeo)."""
+        self._smart_turn = smart_turn
+        """Analizador semántico de fin de turno (modelo ONNX, ver
+        pipecat.audio.turn.smart_turn) opcional. Si está seteado,
+        reemplaza el debounce por timer fijo (_TURN_END_DEBOUNCE_SECS)
+        con una decisión real: ¿el audio suena a que el usuario terminó
+        de hablar, o está a mitad de una idea? Evita el trade-off
+        latencia/precisión de los timers fijos (subirlos = más preciso
+        pero más lento SIEMPRE, incluso cuando el usuario sí terminó)."""
+        self._user_speaking = False
+        self._sample_rate = 16000
+
+    async def setup(self, setup) -> None:
+        await super().setup(setup)
+        if self._smart_turn is not None:
+            self._smart_turn.set_sample_rate(self._sample_rate)
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -139,10 +156,17 @@ class JevSystem1Processor(FrameProcessor):
             await self._handle_transcription(frame, direction)
             return
 
+        if isinstance(frame, InputAudioRawFrame):
+            if self._smart_turn is not None:
+                self._smart_turn.append_audio(frame.audio, self._user_speaking)
+            await self.push_frame(frame, direction)
+            return
+
         if isinstance(frame, VADUserStartedSpeakingFrame):
-            # El usuario retomó antes de que se cumpliera el debounce de
-            # fin de turno: cancelar la escalada pendiente, seguir
+            # El usuario retomó antes de que se cumpliera el debounce/
+            # análisis de fin de turno: cancelar lo pendiente, seguir
             # acumulando en el mismo turno (NO resetear confirmed_text).
+            self._user_speaking = True
             if self._pending_escalate_task is not None:
                 self._pending_escalate_task.cancel()
                 self._pending_escalate_task = None
@@ -150,17 +174,43 @@ class JevSystem1Processor(FrameProcessor):
             return
 
         if isinstance(frame, VADUserStoppedSpeakingFrame):
+            self._user_speaking = False
             await self.push_frame(frame, direction)
             if self._pending_escalate_task is not None:
                 self._pending_escalate_task.cancel()
-            self._pending_escalate_task = asyncio.create_task(self._debounced_turn_end(direction))
+            if self._smart_turn is not None:
+                self._pending_escalate_task = asyncio.create_task(self._smart_turn_end(direction))
+            else:
+                self._pending_escalate_task = asyncio.create_task(self._debounced_turn_end(direction))
             return
 
         await self.push_frame(frame, direction)
 
-    async def _debounced_turn_end(self, direction: FrameDirection) -> None:
+    _SMART_TURN_INCOMPLETE_FALLBACK_SECS = 2.5
+    """Si el modelo de smart-turn dice INCOMPLETE (cree que el usuario va a
+    seguir hablando), no escalamos todavía -- pero si no retoma en este
+    tiempo, escalamos igual. Red de seguridad: el modelo puede
+    equivocarse, y no queremos dejar al usuario esperando para siempre."""
+
+    async def _smart_turn_end(self, direction: FrameDirection) -> None:
+        state, _ = await self._smart_turn.analyze_end_of_turn()
+        self._pending_escalate_task = None
+        if state == EndOfTurnState.COMPLETE:
+            if self._r2t2_stt is not None:
+                tail = await self._r2t2_stt.flush_final()
+                if tail:
+                    self.confirmed_text += tail
+                    print(f'[Jev] flush R2T2 recuperó cola: "{tail}"', flush=True)
+            await self._handle_turn_end(direction)
+        else:
+            print("[Jev] smart-turn: incompleto, espero que el usuario siga", flush=True)
+            self._pending_escalate_task = asyncio.create_task(
+                self._debounced_turn_end(direction, delay=self._SMART_TURN_INCOMPLETE_FALLBACK_SECS)
+            )
+
+    async def _debounced_turn_end(self, direction: FrameDirection, delay: float | None = None) -> None:
         try:
-            await asyncio.sleep(self._TURN_END_DEBOUNCE_SECS)
+            await asyncio.sleep(delay if delay is not None else self._TURN_END_DEBOUNCE_SECS)
         except asyncio.CancelledError:
             return
         self._pending_escalate_task = None

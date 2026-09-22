@@ -18,6 +18,7 @@ import asyncio
 import os
 
 
+from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
@@ -100,7 +101,13 @@ async def main():
         # primea. No usar system_prompt con frases completas -- si se
         # reintenta, probar con palabras sueltas y bajo peso.
     )
-    jev_router = JevSystem1Processor(r2t2_stt=r2t2_stt)
+    # Smart-turn: modelo ONNX (viene empaquetado con pipecat, sin
+    # descarga) que decide semánticamente si el usuario terminó de
+    # hablar, en vez de contar un timer fijo de silencio. Reemplaza el
+    # trade-off "timer corto = rápido pero corta palabras" / "timer largo
+    # = preciso pero siempre lento" por una decisión real por turno.
+    smart_turn = LocalSmartTurnAnalyzerV3()
+    jev_router = JevSystem1Processor(r2t2_stt=r2t2_stt, smart_turn=smart_turn)
 
     # Capa 3: System 2 (razonamiento). Groq (cloud, API compatible con
     # OpenAI, inferencia LPU muy rápida) para no competir por VRAM con el
