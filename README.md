@@ -169,17 +169,22 @@ label es dinámico.
   en `services/jev_system1.py` clasifica el texto escalado con una
   heurística sin costo (largo >= 12 palabras, o keywords tipo "explain
   in detail"/"compare"/"walk me through"), sin llamada extra al LLM
-  (0ms). Si es slow path: Jev empuja un `TTSSpeakFrame` de ack
-  inmediato ("Let me think about that for a second.") y el `TextFrame`
-  real lleva el prefijo `[DETAILED_ANSWER]`, que el system prompt
+  (0ms). Si es slow path: Jev empuja un chime no hablado (dos notas
+  ascendentes, `OutputAudioRawFrame` generado con `numpy`, 180ms) --
+  audio crudo en vez de un ack sintetizado por TTS: suena en cuanto se
+  empuja el frame, sin esperar síntesis, y como no es
+  `TTSAudioRawFrame` no dispara `BotStartedSpeakingFrame` (no hace
+  falta silenciar el ASR por un sonido tan corto). El `TextFrame` real
+  lleva el prefijo `[DETAILED_ANSWER]`, que el system prompt
   (`DEFAULT_SYSTEM_PROMPT`/`_EN` en `services/system2_llm.py`)
   interpreta como permiso para saltarse la regla de "una frase". No
   hace falta `asyncio.create_task` ni gestión de background task: los
-  frames de pipecat ya son async, así que el ack suena mientras el LLM
-  arma la respuesta larga en paralelo. Motivación: no tiene sentido
+  frames de pipecat ya son async, así que el chime suena mientras el
+  LLM arma la respuesta larga en paralelo. Motivación: no tiene sentido
   perseguir <250ms para TODAS las consultas -- las simples ya están en
   ~400-500ms (bien), y las complejas dejan de competir por ese
-  presupuesto porque el usuario ya sabe que "está pensando".
+  presupuesto porque el usuario ya sabe que "está pensando" (con un
+  sonido, no una frase hablada -- menos intrusivo, más rápido).
 
 
 ## Referencia: otros modelos ASR/TTS open-source (no usados, no aplica hoy)

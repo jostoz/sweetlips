@@ -13,11 +13,14 @@ from __future__ import annotations
 
 import asyncio
 
+import numpy as np
+
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     Frame,
     InputAudioRawFrame,
+    OutputAudioRawFrame,
     TextFrame,
     TranscriptionFrame,
     TTSSpeakFrame,
@@ -74,12 +77,32 @@ _SLOW_PATH_MIN_WORDS = 12
 # slow path evita la regla "una frase" cortando una respuesta que
 # necesitaba desarrollo.
 
-_SLOW_PATH_ACKS = (
-    "Let me think about that for a second.",
-    "Give me a moment to work through that.",
-    "Okay, let me put that together.",
-)
-_slow_path_ack_index = 0
+_SLOW_PATH_CHIME_SAMPLE_RATE = 24000
+
+
+def _generate_chime(sample_rate: int) -> bytes:
+    """Dos notas ascendentes cortas (señal de "pensando", no hablada --
+    más rápida que un TTSSpeakFrame porque no pasa por síntesis: es
+    audio crudo, suena en cuanto se empuja el frame). Envelope con
+    fade in/out de 10ms en cada nota para evitar clicks."""
+    notes_hz = (720.0, 1080.0)
+    note_secs = 0.09
+    fade_secs = 0.01
+    chunks = []
+    for freq in notes_hz:
+        n = int(sample_rate * note_secs)
+        t = np.arange(n) / sample_rate
+        wave = np.sin(2 * np.pi * freq * t)
+        fade_n = int(sample_rate * fade_secs)
+        envelope = np.ones(n)
+        envelope[:fade_n] = np.linspace(0.0, 1.0, fade_n)
+        envelope[-fade_n:] = np.linspace(1.0, 0.0, fade_n)
+        chunks.append(wave * envelope * 0.3)
+    samples = np.concatenate(chunks)
+    return (samples * 32767).astype(np.int16).tobytes()
+
+
+_SLOW_PATH_CHIME_AUDIO = _generate_chime(_SLOW_PATH_CHIME_SAMPLE_RATE)
 
 
 def _is_slow_path(text: str) -> bool:
@@ -89,12 +112,6 @@ def _is_slow_path(text: str) -> bool:
     lower = text.lower()
     return any(kw in lower for kw in _SLOW_PATH_KEYWORDS)
 
-
-def _next_slow_path_ack() -> str:
-    global _slow_path_ack_index
-    ack = _SLOW_PATH_ACKS[_slow_path_ack_index % len(_SLOW_PATH_ACKS)]
-    _slow_path_ack_index += 1
-    return ack
 
 
 
@@ -347,15 +364,24 @@ class JevSystem1Processor(FrameProcessor):
         latency_probe.mark_turn_start()
         self.confirmed_text = ""
         if _is_slow_path(prompt):
-            # Slow path (patrón FXPerto QueryRouter): ack hablado
-            # inmediato + TextFrame con la etiqueta que le saca a Groq el
-            # límite de una frase. El TTSSpeakFrame no es TextFrame, así
-            # que System2PromptBridge no lo intercepta -- suena de
-            # inmediato mientras el LLM arma la respuesta larga en
-            # paralelo (frames de pipecat ya son async, no hace falta
-            # asyncio.create_task acá).
+            # Slow path (patrón FXPerto QueryRouter): chime no hablado
+            # (dos notas ascendentes, audio crudo) + TextFrame con la
+            # etiqueta que le saca a Groq el límite de una frase. Audio
+            # crudo en vez de TTSSpeakFrame: suena en cuanto se empuja
+            # el frame, sin esperar síntesis, y como no es
+            # TTSAudioRawFrame no dispara BotStartedSpeakingFrame (no
+            # hace falta silenciar el ASR por un chime de 180ms). El LLM
+            # arma la respuesta larga en paralelo (frames de pipecat ya
+            # son async, no hace falta asyncio.create_task acá).
             print(f'[Jev] -> escalando a System 2 (LLM, slow path): "{prompt}"', flush=True)
-            await self.push_frame(TTSSpeakFrame(text=_next_slow_path_ack()), direction)
+            await self.push_frame(
+                OutputAudioRawFrame(
+                    audio=_SLOW_PATH_CHIME_AUDIO,
+                    sample_rate=_SLOW_PATH_CHIME_SAMPLE_RATE,
+                    num_channels=1,
+                ),
+                direction,
+            )
             prompt = f"{_SLOW_PATH_TAG} {prompt}"
         else:
             print(f'[Jev] -> escalando a System 2 (LLM): "{prompt}"', flush=True)
