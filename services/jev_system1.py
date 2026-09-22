@@ -34,6 +34,22 @@ _INTERRUPT_WORDS = ("cállate", "callate", "detente", "silencio", "cancela")
 # el bot se autointerrumpía al escucharse decir su propia "para" por el
 # parlante -> mic -> ASR. Sacada; las que quedan son comandos explícitos
 # de corte que casi nunca aparecen sueltos en una frase normal.
+_INTERRUPT_PREFIX_LEN = 4
+# Match por prefijo, no la palabra completa: si el usuario escala el
+# turno (o R2T2 tarda en transcribir) antes de terminar de decir
+# "cállate", el texto queda cortado en algo como "cáll" -- eso NO
+# contiene "cállate" como substring completo y el corte no se disparaba
+# (bug real, visto en vivo: "pará, cállate" llegó como "para cáll" y se
+# mandó al LLM en vez de interrumpir). Alcanza con los primeros 4
+# caracteres de cada palabra para no confundirse con otras.
+
+
+def _has_interrupt_word(normalized_text: str) -> bool:
+    return any(
+        word in normalized_text or word[:_INTERRUPT_PREFIX_LEN] in normalized_text
+        for word in _INTERRUPT_WORDS
+    )
+
 _ESCALATE_WORDS = ("por qué", "por que", "cómo", "como", "explícame", "explicame", "recomiéndame", "recomiendame")
 # ^ Ya NO se usa para escalar a mitad de frase (ver nota abajo en
 # _evaluate_intent) -- se deja documentado por si se reintroduce algo
@@ -166,22 +182,24 @@ class JevSystem1Processor(FrameProcessor):
         normalized = self.confirmed_text.strip().lower()
 
         if self._bot_speaking:
-            # Antes: ignorábamos TODO acá (salvo interrupción explícita)
-            # para evitar que el TTS se re-transcribiera a sí mismo por
-            # acople acústico sin auriculares. Ahora que el AEC (WASAPI
-            # loopback, ver services/aec_filter.py) limpia el eco antes de
-            # que llegue a R2T2, confiamos en que lo que se transcribe acá
-            # es genuino y lo dejamos acumular normal -- si el AEC no
-            # cancela perfecto y vuelve a aparecer auto-interrupción, hay
-            # que revertir este bloque a ignorar todo salvo interrupt words.
-            pass
+            # Se probó relajar esto (confiar en el AEC) y el AEC no
+            # cancela lo suficiente: el bot volvió a escucharse a sí
+            # mismo ("se está escuchando otra vez", confirmado en vivo).
+            # Vuelta a la regla segura: mientras el bot habla, ignoramos
+            # todo salvo un barge-in explícito.
+            if _has_interrupt_word(normalized):
+                print("[Jev] -> interrupción detectada, cortando TTS", flush=True)
+                await self.broadcast_interruption()
+            self.confirmed_text = ""
+            return
 
         # 1. Reflejo de interrupción (barge-in): corta System 2/TTS al instante.
-        if any(word in normalized for word in _INTERRUPT_WORDS):
+        if _has_interrupt_word(normalized):
             print("[Jev] -> interrupción detectada, cortando TTS", flush=True)
             await self.broadcast_interruption()
             self.confirmed_text = ""
             return
+
 
         decision = self._evaluate_intent(normalized)
 

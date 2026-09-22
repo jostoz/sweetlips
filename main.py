@@ -100,7 +100,7 @@ async def main():
             # esta sesión). qwen3.8-27b no es reasoning: no tiene ninguno
             # de los dos problemas.
             model="qwen/qwen3.8-27b",
-            max_completion_tokens=80,
+            max_completion_tokens=55,
         ),
         api_key=os.environ["GROQ_API_KEY"],
         base_url="https://api.groq.com/openai/v1",
