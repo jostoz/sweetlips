@@ -1,18 +1,22 @@
 """Pipeline Edge: micrófono local -> FireRedVAD -> R2T2 (ASR append-only)
--> Jev (System 1) -> acción local / LLM local (System 2) -> Kokoro TTS local
--> altavoz.
+-> Jev (System 1) -> acción local / LLM cloud (System 2, Groq) ->
+-> Kokoro TTS local -> altavoz.
 
 Requiere pipecat-ai>=1.9.0 (API de servicios/transportes actual) y el
 paquete `fireredvad` (no está en PyPI; ver services/firered_vad.py). Ver
 README de cada servicio para instalar sus extras:
     pip install -r requirements.txt
 
-El LLM de System 2 apunta al servidor OpenAI-compatible de LM Studio
-(local, sin salir a internet). Verificar antes que esté corriendo:
-    lms server status   # Server: ON (port: 11434), modelo cargado
+El LLM de System 2 ya NO es local: apunta a Groq (API compatible con
+OpenAI, inferencia LPU de baja latencia). Requiere la variable de entorno
+GROQ_API_KEY con una key válida de https://console.groq.com/keys. Se sacó
+LM Studio del pipeline porque competía por VRAM con el servidor R2T2
+(vLLM) en la misma GPU.
 """
 
 import asyncio
+import os
+
 
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
@@ -49,14 +53,15 @@ async def main():
     )
     jev_router = JevSystem1Processor()
 
-    # Capa 3: System 2 (razonamiento). LM Studio expone un servidor
-    # OpenAI-compatible local en :11434; no sale a internet.
+    # Capa 3: System 2 (razonamiento). Groq (cloud, API compatible con
+    # OpenAI, inferencia LPU muy rápida) para no competir por VRAM con el
+    # servidor R2T2 en la GPU local.
     system2_context = build_shared_context()
     system2_prompt_bridge = System2PromptBridge(system2_context)
     system2_llm = OpenAILLMService(
-        settings=OpenAILLMService.Settings(model="qwen3.8-27b"),
-        api_key="lm-studio",  # LM Studio no valida la key, pero el SDK la exige.
-        base_url="http://localhost:11434/v1",
+        settings=OpenAILLMService.Settings(model="openai/gpt-oss-120b"),
+        api_key=os.environ["GROQ_API_KEY"],
+        base_url="https://api.groq.com/openai/v1",
     )
     system2_response_collector = System2ResponseCollector(system2_context)
 
@@ -72,7 +77,7 @@ async def main():
             r2t2_stt,  # Capa 1: ASR streaming append-only.
             jev_router,  # Capa 2: System 1 (decisión/interrupción/filtro).
             system2_prompt_bridge,  # Capa 3a: arma el turno de LLM cuando Jev escala.
-            system2_llm,  # Capa 3b: LLM local (LM Studio, OpenAI-compatible).
+            system2_llm,  # Capa 3b: LLM cloud (Groq, OpenAI-compatible).
             system2_response_collector,  # Capa 3c: guarda la respuesta en el contexto.
             tts,  # Capa 4: streaming TTS.
             transport.output(),  # Altavoz físico.

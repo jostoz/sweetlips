@@ -29,10 +29,10 @@ websockets
 #   huggingface-cli download netease-youdao/Confucius4-R2T2 --local-dir ~/models/Confucius4-R2T2
 #   ./run_start_server.sh start --model_path ~/models/Confucius4-R2T2
 
-# --- LLM System 2 (LM Studio, OpenAI-compatible, local) ---
+# --- LLM System 2 (Groq, cloud, OpenAI-compatible, inferencia LPU rápida) ---
 # No requiere paquete Python extra (OpenAILLMService usa el cliente `openai`,
-# que ya viene con pipecat-ai). Requiere LM Studio corriendo con un modelo
-# cargado y su servidor local expuesto:
-#   lms server start          # o abrir LM Studio y activar el server
-#   lms server status         # confirmar "Server: ON (port: ...)"
-# Ajustar en main.py el `model` y `base_url` al puerto/modelo reales.
+# que ya viene con pipecat-ai). Requiere la variable de entorno GROQ_API_KEY
+# con una key de https://console.groq.com/keys.
+#   setx GROQ_API_KEY "gsk_..."   (PowerShell: reabrir terminal después)
+# Se eligió cloud en vez de un LLM local (LM Studio) porque competía por VRAM
+# con el servidor R2T2 (vLLM) en la misma GPU.
