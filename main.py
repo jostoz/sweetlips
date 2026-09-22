@@ -107,7 +107,7 @@ async def main():
         ]
     )
 
-    task = PipelineTask(pipeline, enable_rtvi=False)
+    task = PipelineTask(pipeline, enable_rtvi=False, idle_timeout_secs=None)
     runner = PipelineRunner()
 
     print("\n[Listo] El agente de voz Edge está escuchando... (Ctrl+C para salir)\n")
