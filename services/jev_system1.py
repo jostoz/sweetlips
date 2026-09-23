@@ -336,16 +336,24 @@ class JevSystem1Processor(FrameProcessor):
     tiempo, escalamos igual. Red de seguridad: el modelo puede
     equivocarse, y no queremos dejar al usuario esperando para siempre."""
 
+    _SMART_TURN_COMPLETE_GRACE_SECS = 0.35
+    """Aunque smart-turn diga COMPLETE, no escalar al instante -- esperar
+    este margen por si el usuario retoma. Bug real visto en vivo:
+    "Hola, ¿cómo estás? Podrías" escaló completo y cortado a mitad de
+    frase (confirmado por timing: pasó ANTES de que el bot empezara a
+    hablar, no fue el mute comiéndose el inicio -- smart-turn-v3.2
+    (última versión, con soporte de español) igual se equivocó en una
+    pausa natural para pensar). Reusa _debounced_turn_end, que ya se
+    cancela solo si llega VADUserStartedSpeakingFrame en la ventana
+    (mismo mecanismo que ya existía para el camino INCOMPLETE)."""
+
     async def _smart_turn_end(self, direction: FrameDirection) -> None:
         state, _ = await self._smart_turn.analyze_end_of_turn()
         self._pending_escalate_task = None
         if state == EndOfTurnState.COMPLETE:
-            if self._r2t2_stt is not None:
-                tail = await self._r2t2_stt.flush_final()
-                if tail:
-                    self.confirmed_text += tail
-                    print(f'[Jev] flush R2T2 recuperó cola: "{tail}"', flush=True)
-            await self._handle_turn_end(direction)
+            self._pending_escalate_task = asyncio.create_task(
+                self._debounced_turn_end(direction, delay=self._SMART_TURN_COMPLETE_GRACE_SECS)
+            )
         else:
             print("[Jev] smart-turn: incompleto, espero que el usuario siga", flush=True)
             self._pending_escalate_task = asyncio.create_task(
