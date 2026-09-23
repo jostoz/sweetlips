@@ -352,24 +352,35 @@ class JevSystem1Processor(FrameProcessor):
     tiempo, escalamos igual. Red de seguridad: el modelo puede
     equivocarse, y no queremos dejar al usuario esperando para siempre."""
 
-    _SMART_TURN_COMPLETE_GRACE_SECS = 0.35
+    _SMART_TURN_COMPLETE_GRACE_SECS_BY_LANG = {
+        "English": 0.0,
+        "Spanish": 0.35,
+    }
     """Aunque smart-turn diga COMPLETE, no escalar al instante -- esperar
-    este margen por si el usuario retoma. Bug real visto en vivo:
-    "Hola, ¿cómo estás? Podrías" escaló completo y cortado a mitad de
-    frase (confirmado por timing: pasó ANTES de que el bot empezara a
-    hablar, no fue el mute comiéndose el inicio -- smart-turn-v3.2
-    (última versión, con soporte de español) igual se equivocó en una
-    pausa natural para pensar). Reusa _debounced_turn_end, que ya se
-    cancela solo si llega VADUserStartedSpeakingFrame en la ventana
-    (mismo mecanismo que ya existía para el camino INCOMPLETE)."""
+    este margen por si el usuario retoma. Bug real visto en vivo en
+    ESPAÑOL: "Hola, ¿cómo estás? Podrías" escaló completo y cortado a
+    mitad de frase (confirmado por timing: pasó ANTES de que el bot
+    empezara a hablar, no fue el mute comiéndose el inicio -- smart-
+    turn-v3.2 igual se equivocó en una pausa natural para pensar).
+    Medido en vivo en INGLÉS (instrumentación _grace_period_saves/
+    _grace_period_wastes, sesión de hoy): 0 salvados / 12 totales --
+    el grace period nunca evitó un corte real en 12 turnos, puro costo
+    de 0.35s sin beneficio. Bajado a 0s para inglés; español lo
+    mantiene porque ahí es donde se encontró el bug original y no hay
+    datos que digan que ya no hace falta. Reusa _debounced_turn_end,
+    que ya se cancela solo si llega VADUserStartedSpeakingFrame en la
+    ventana (mismo mecanismo que ya existía para el camino INCOMPLETE)."""
 
     async def _smart_turn_end(self, direction: FrameDirection) -> None:
         state, _ = await self._smart_turn.analyze_end_of_turn()
         self._pending_escalate_task = None
         if state == EndOfTurnState.COMPLETE:
             self._grace_period_pending = True
+            grace_secs = self._SMART_TURN_COMPLETE_GRACE_SECS_BY_LANG.get(
+                self._language, self._SMART_TURN_COMPLETE_GRACE_SECS_BY_LANG["English"]
+            )
             self._pending_escalate_task = asyncio.create_task(
-                self._debounced_turn_end(direction, delay=self._SMART_TURN_COMPLETE_GRACE_SECS)
+                self._debounced_turn_end(direction, delay=grace_secs)
             )
         else:
             print("[Jev] smart-turn: incompleto, espero que el usuario siga", flush=True)
