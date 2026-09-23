@@ -283,6 +283,19 @@ label es dinámico.
     matemáticamente bytes/2/16000 con la duración real medida).
   - Kokoro-FastAPI queda como alternativa disponible
     (`services/kokoro_gpu_tts.py`) si se quiere volver atrás.
+  - **Pendiente (no implementado)**: usar la voz Online (Ava, mejor
+    calidad, 1.2-1.9s) para avisos asíncronos no conversacionales (ej.
+    "tarea X completada" de una cola de tareas en background), donde la
+    latencia no importa, reservando Jenny/Dalia local (147ms) para la
+    conversación en vivo. Requiere: (a) un sistema de cola/reportes de
+    tareas que hoy no existe en el pipeline, (b) una segunda instancia
+    de `WindowsTTSService` (o un parámetro de voz por llamada) separada
+    de la que usa el pipeline conversacional. Ojo: lo que tenemos
+    confirmado funcionando es "Ava Online (Natural)" (backend de Edge),
+    no necesariamente la misma "Ava (Natural HD)" que bloquea Narrador
+    (nunca desbloqueada) -- escuchar ambas antes de asumir que son la
+    misma calidad.
+
 
 
 
