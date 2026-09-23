@@ -121,6 +121,19 @@ class JevSystem1Processor(FrameProcessor):
     considera que el bot "terminó" (buffer de reproducción), y sin eso el
     mic se re-transcribe a sí mismo justo en ese hueco."""
 
+    _UNMUTE_GRACE_SECS_AFTER_INTERRUPT = 1.5
+    """Igual que _UNMUTE_GRACE_SECS pero para cuando el bot para por una
+    interrupción (barge-in), no por terminar de hablar solo. Bug real
+    visto en vivo, reproducido 2/2 veces: tras interrumpir, VAD se queda
+    sin disparar "usuario paró" por 15+ segundos (el watchdog termina
+    descartando el turno completo). Hipótesis: un corte abrupto de TTS
+    deja al AEC3 adaptativo con más audio residual/desalineado para
+    reconverger que una terminación natural (que ya tapea el volumen de
+    forma predecible) -- WasapiLoopbackCapture sigue grabando fielmente
+    lo que suena físicamente por el parlante, que no se detiene
+    instantáneo solo porque pipecat cortó los frames nuevos. Margen más
+    generoso específicamente acá, no en el caso normal."""
+
     _TURN_END_DEBOUNCE_SECS = 0.5
     """Al detectar VADUserStoppedSpeakingFrame (0.7s de silencio de VAD) no
     escalamos al instante: es común hacer una pausa corta para pensar y
@@ -186,6 +199,7 @@ class JevSystem1Processor(FrameProcessor):
         confirmado en vivo: turno de más de un minuto acumulando texto sin
         resolver con la TV de fondo."""
         self._watchdog_task: asyncio.Task | None = None
+        self._interrupted_recently = False
         self._grace_period_pending = False
         self._grace_period_saves = 0
         self._grace_period_wastes = 0
@@ -247,7 +261,10 @@ class JevSystem1Processor(FrameProcessor):
         if isinstance(frame, BotStoppedSpeakingFrame):
             if self._unmute_task is not None:
                 self._unmute_task.cancel()
-            self._unmute_task = asyncio.create_task(self._unmute_after_grace())
+            self._unmute_task = asyncio.create_task(
+                self._unmute_after_grace(after_interrupt=self._interrupted_recently)
+            )
+            self._interrupted_recently = False
             await self.push_frame(frame, direction)
             return
 
@@ -410,9 +427,12 @@ class JevSystem1Processor(FrameProcessor):
                 print(f'[Jev] flush R2T2 recuperó cola: "{tail}"', flush=True)
         await self._handle_turn_end(direction)
 
-    async def _unmute_after_grace(self) -> None:
+    async def _unmute_after_grace(self, after_interrupt: bool = False) -> None:
+        delay = (
+            self._UNMUTE_GRACE_SECS_AFTER_INTERRUPT if after_interrupt else self._UNMUTE_GRACE_SECS
+        )
         try:
-            await asyncio.sleep(self._UNMUTE_GRACE_SECS)
+            await asyncio.sleep(delay)
             self._bot_speaking = False
             # (Ya NO se resetea confirmed_text acá, mismo motivo que en
             # BotStoppedSpeakingFrame: el reset por delta dentro del
@@ -450,6 +470,7 @@ class JevSystem1Processor(FrameProcessor):
             self._mute_watch_text = (self._mute_watch_text + frame.text)[-40:]
             if _has_interrupt_word(self._mute_watch_text.lower(), self._language):
                 print("[Jev] -> interrupción detectada, cortando TTS", flush=True)
+                self._interrupted_recently = True
                 await self.broadcast_interruption()
                 self._mute_watch_text = ""
             self.confirmed_text = ""
@@ -458,6 +479,7 @@ class JevSystem1Processor(FrameProcessor):
         # 1. Reflejo de interrupción (barge-in): corta System 2/TTS al instante.
         if _has_interrupt_word(normalized, self._language):
             print("[Jev] -> interrupción detectada, cortando TTS", flush=True)
+            self._interrupted_recently = True
             await self.broadcast_interruption()
             self.confirmed_text = ""
             self._turn_started_at = None
