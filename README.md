@@ -296,6 +296,31 @@ label es dinámico.
     (nunca desbloqueada) -- escuchar ambas antes de asumir que son la
     misma calidad.
 
+- **Watchdog de turno atascado (>15s) a veces descarta texto real, no
+  solo ruido de fondo**: caso original (TV/música de fondo, ver arriba)
+  confirmado que el descarte es correcto ahí. Pero encontrado en vivo,
+  reproducido varias veces: a veces VAD (FireRedVAD) simplemente no
+  dispara `on_speech_stopped` con texto de usuario REAL acumulado
+  (ej. "and capitalism, please. Hey, please" -- razonable, no basura),
+  y el watchdog lo tira igual. Probado un fix (margen de mute más largo
+  tras una interrupción, `_UNMUTE_GRACE_SECS_AFTER_INTERRUPT=1.5s`,
+  hipótesis: eco residual del parlante confundiendo a VAD) -- **no
+  funcionó**, se reprodujo igual en un caso sin ninguna interrupción de
+  por medio. Causa real de por qué VAD falla en disparar el stop
+  sigue sin identificar.
+  - Decisión: mantener el descarte (no escalar el texto acumulado al
+    LLM cuando el watchdog dispara). Escalar arriesgaría mandar ruido
+    de fondo real (TV, música -- el caso que motivó el watchdog en
+    primer lugar) al LLM, que respondería sobre algo que el usuario
+    nunca dijo -- peor experiencia que quedarse en silencio. El caso
+    "era texto real pero VAD falló" fue la minoría de las veces vistas
+    hoy (2-3 de varias horas de prueba), no vale la pena el riesgo del
+    caso contrario.
+  - Si se retoma: instrumentar por qué FireRedVAD deja de reportar
+    confianza baja (loguear `voice_confidence()` real en el momento del
+    watchdog) antes de intentar otro fix a ciegas.
+
+
 
 
 
