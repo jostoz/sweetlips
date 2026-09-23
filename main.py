@@ -33,12 +33,7 @@ from services.jev_system1 import JevSystem1Processor
 from services.kokoro_gpu_tts import KokoroGPUTTSService
 from services import latency_probe
 from services.r2t2_stt import ConfuciusR2T2Service
-from services.system2_llm import (
-    DEFAULT_SYSTEM_PROMPT_EN,
-    System2PromptBridge,
-    System2ResponseCollector,
-    build_shared_context,
-)
+from services.system2_llm import System2PromptBridge, System2ResponseCollector, build_shared_context
 
 
 async def main():
@@ -87,12 +82,15 @@ async def main():
         # "localhost" resuelve primero a IPv6 (::1), que no responde, y
         # requests/urllib3 tarda ~2s en caer a IPv4 antes de conectar.
         ws_uri="ws://127.0.0.1:8272/asr_stream_api_v1",
-        language="English",  # prueba completa en inglés: R2T2, LLM, TTS,
-        # comandos, todo -- para que la comparación sea real y no mezclada
-        # (la prueba anterior mezcló R2T2 en inglés con comandos en
-        # español y eso rompió todo). Si R2T2 transcribe mejor Y el resto
-        # de la pila funciona bien en inglés, podría bajar la necesidad
-        # de timers largos/smart-turn tan conservador.
+        language="Spanish",  # prueba en español, ahora con la contención
+        # de GPU R2T2/Kokoro resuelta (gpu_memory_utilization 0.80->0.65,
+        # ver README) y el router semántico fast/slow ya soportando
+        # español (encoder multilingüe, ver services/semantic_jev_router.py)
+        # -- la prueba anterior en inglés confirmó que R2T2 transcribe
+        # frases más completas, pero rompía el reconocimiento de comandos
+        # en español. Con los fixes de esta sesión, vale la pena
+        # re-confirmar si el patrón de corte en preposiciones ("historia
+        # de", "ciudad de") sigue igual de marcado o mejoró.
     )
     # Smart-turn: modelo ONNX (viene empaquetado con pipecat, sin
     # descarga) que decide semánticamente si el usuario terminó de
@@ -100,12 +98,12 @@ async def main():
     # trade-off "timer corto = rápido pero corta palabras" / "timer largo
     # = preciso pero siempre lento" por una decisión real por turno.
     smart_turn = LocalSmartTurnAnalyzerV3()
-    jev_router = JevSystem1Processor(r2t2_stt=r2t2_stt, smart_turn=smart_turn)
+    jev_router = JevSystem1Processor(r2t2_stt=r2t2_stt, smart_turn=smart_turn, language="Spanish")
 
     # Capa 3: System 2 (razonamiento). Groq (cloud, API compatible con
     # OpenAI, inferencia LPU muy rápida) para no competir por VRAM con el
     # servidor R2T2 en la GPU local.
-    system2_context = build_shared_context(system_prompt=DEFAULT_SYSTEM_PROMPT_EN)
+    system2_context = build_shared_context()  # DEFAULT_SYSTEM_PROMPT (español)
     system2_prompt_bridge = System2PromptBridge(system2_context)
     system2_llm = OpenAILLMService(
         settings=OpenAILLMService.Settings(
@@ -134,10 +132,10 @@ async def main():
         base_url="http://127.0.0.1:8880/v1",
         api_key="not-needed",
         model="kokoro",
-        # af_heart: voz nativa en inglés de Kokoro (buena calidad,
-        # descartada antes para español por sonar "americano hablando
-        # español" -- en inglés suena bien, es su idioma nativo).
-        voice="af_heart",
+        # ef_dora: una de las 3 voces en español que trae Kokoro (ef_dora,
+        # em_alex, em_santa). af_heart (inglés) sonaba como "americano
+        # hablando español" -- descartada para este idioma.
+        voice="ef_dora",
     )
     loopback_capture = WasapiLoopbackCapture(far_end_buffer)
     await loopback_capture.start()  # referencia far-end real (WASAPI loopback) para el AEC.

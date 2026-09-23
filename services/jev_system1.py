@@ -36,11 +36,16 @@ from services import semantic_jev_router
 
 from actions.local_dispatcher import execute_local_command
 
-_INTERRUPT_WORDS = ("stop", "shut up", "quiet", "cancel", "enough")
-# Prueba completa en inglés: traducido de ("cállate", "callate",
-# "detente", "silencio", "cancela"). "stop" es corto y común en inglés
-# casual -- si genera falsos positivos (a diferencia de "para" en
-# español, que sí los daba), reconsiderar.
+_INTERRUPT_WORDS_BY_LANG = {
+    "English": ("stop", "shut up", "quiet", "cancel", "enough"),
+    "Spanish": ("cállate", "callate", "detente", "silencio", "cancela"),
+    # "para" (sola) estaba antes en español: es una de las palabras más
+    # comunes ("cosas para picar", "bueno para comer"...) y sin
+    # auriculares el bot se autointerrumpía al escucharse decir su propia
+    # "para" por el parlante -> mic -> ASR. Sacada; las que quedan son
+    # comandos explícitos de corte que casi nunca aparecen sueltos en una
+    # frase normal.
+}
 _INTERRUPT_PREFIX_LEN = 4
 # Match por prefijo, no la palabra completa: si el usuario escala el
 # turno (o R2T2 tarda en transcribir) antes de terminar de decir
@@ -51,10 +56,11 @@ _INTERRUPT_PREFIX_LEN = 4
 # caracteres de cada palabra para no confundirse con otras.
 
 
-def _has_interrupt_word(normalized_text: str) -> bool:
+def _has_interrupt_word(normalized_text: str, language: str) -> bool:
+    words = _INTERRUPT_WORDS_BY_LANG.get(language, _INTERRUPT_WORDS_BY_LANG["English"])
     return any(
         word in normalized_text or word[:_INTERRUPT_PREFIX_LEN] in normalized_text
-        for word in _INTERRUPT_WORDS
+        for word in words
     )
 
 _ESCALATE_WORDS = ("por qué", "por que", "cómo", "como", "explícame", "explicame", "recomiéndame", "recomiendame")
@@ -94,17 +100,16 @@ def _generate_chime(sample_rate: int) -> bytes:
 
 _SLOW_PATH_CHIME_AUDIO = _generate_chime(_SLOW_PATH_CHIME_SAMPLE_RATE)
 
-# _is_slow_path ya NO es keyword/largo-de-frase: la heurística de keywords
-# no generalizaba (bug real en vivo: "Make analysis of the two principal
-# ideologues, capitalism and socialism" no matcheaba ninguna keyword y cayó
-# al fast path truncado). Ahora usa `semantic_jev_router.is_slow_path`,
-# matching semántico local (FastEmbedEncoder, sin API/red) que generaliza a
-# paráfrasis nunca vistas. Se llama una sola vez por turno en _escalate()
-# (no por delta): ~30-60ms medidos, insignificante contra el presupuesto
-# de ~400-500ms del turno completo -- correrlo por delta sí sería costoso.
-_is_slow_path = semantic_jev_router.is_slow_path
-
-
+# La decisión fast/slow ya NO es keyword/largo-de-frase: la heurística de
+# keywords no generalizaba (bug real en vivo: "Make analysis of the two
+# principal ideologues, capitalism and socialism" no matcheaba ninguna
+# keyword y cayó al fast path truncado). Ahora usa
+# `semantic_jev_router.is_slow_path(texto, idioma)`, matching semántico
+# local (FastEmbedEncoder, sin API/red) que generaliza a paráfrasis nunca
+# vistas, parametrizado por idioma (ver services/semantic_jev_router.py).
+# Se llama una sola vez por turno en _escalate() (no por delta): ~30-60ms
+# medidos, insignificante contra el presupuesto de ~400-500ms del turno
+# completo -- correrlo por delta sí sería costoso.
 
 
 class JevSystem1Processor(FrameProcessor):
@@ -129,8 +134,19 @@ class JevSystem1Processor(FrameProcessor):
     ("historia de", "ciudad de" -- pausa pensando, corte antes de tiempo).
     Precisión > latencia."""
 
-    def __init__(self, r2t2_stt=None, smart_turn: BaseTurnAnalyzer | None = None, **kwargs):
+    def __init__(
+        self,
+        r2t2_stt=None,
+        smart_turn: BaseTurnAnalyzer | None = None,
+        language: str = "English",
+        **kwargs,
+    ):
         super().__init__(**kwargs)
+        self._language = language
+        """Mismo string que ConfuciusR2T2Service.language ("English"/
+        "Spanish"): elige el set de palabras de interrupción/acciones
+        locales y el encoder+rutas del router semántico (ver
+        services/semantic_jev_router.py)."""
         self.confirmed_text = ""
         self._bot_speaking = False
         self._unmute_task: asyncio.Task | None = None
@@ -179,7 +195,9 @@ class JevSystem1Processor(FrameProcessor):
         # sin esto, la primera vez que alguien escala a slow path esperaría
         # ese delay entero antes de que suene el chime. run_in_executor:
         # es una llamada bloqueante (CPU-bound, carga de modelo), no async.
-        await asyncio.get_event_loop().run_in_executor(None, semantic_jev_router.warm_up)
+        await asyncio.get_event_loop().run_in_executor(
+            None, semantic_jev_router.warm_up, self._language
+        )
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -357,7 +375,7 @@ class JevSystem1Processor(FrameProcessor):
             # matcheaba con confirmed_text solo). _mute_watch_text sí
             # acumula entre deltas (acotado) para cubrir ese caso.
             self._mute_watch_text = (self._mute_watch_text + frame.text)[-40:]
-            if _has_interrupt_word(self._mute_watch_text.lower()):
+            if _has_interrupt_word(self._mute_watch_text.lower(), self._language):
                 print("[Jev] -> interrupción detectada, cortando TTS", flush=True)
                 await self.broadcast_interruption()
                 self._mute_watch_text = ""
@@ -365,7 +383,7 @@ class JevSystem1Processor(FrameProcessor):
             return
 
         # 1. Reflejo de interrupción (barge-in): corta System 2/TTS al instante.
-        if _has_interrupt_word(normalized):
+        if _has_interrupt_word(normalized, self._language):
             print("[Jev] -> interrupción detectada, cortando TTS", flush=True)
             await self.broadcast_interruption()
             self.confirmed_text = ""
@@ -384,7 +402,7 @@ class JevSystem1Processor(FrameProcessor):
             # timer venía de un turno de slow-path varios segundos
             # antes. La latencia real era ~170ms. También contaminaba
             # el histograma de Prometheus con outliers falsos.
-            result_speech = execute_local_command(decision["action"], decision["target"])
+            result_speech = execute_local_command(decision["action"], decision["target"], self._language)
             print(f'[Jev] -> acción local: {decision["action"]} {decision["target"]} => "{result_speech}"', flush=True)
             self.confirmed_text = ""
             self._turn_started_at = None
@@ -417,7 +435,7 @@ class JevSystem1Processor(FrameProcessor):
         latency_probe.mark_turn_start()
         self.confirmed_text = ""
         self._turn_started_at = None
-        if _is_slow_path(prompt):
+        if semantic_jev_router.is_slow_path(prompt, self._language):
             # Slow path (patrón FXPerto QueryRouter): chime no hablado
             # (dos notas ascendentes, audio crudo) + TextFrame con la
             # etiqueta que le saca a Groq el límite de una frase. Audio
@@ -445,19 +463,33 @@ class JevSystem1Processor(FrameProcessor):
         """Reglas rápidas de Jev (System 1). Objetivo: decidir en <10ms."""
         words = text.split()
 
-        if "turn on" in text and "light" in text:
-            return {"type": "LOCAL_ACTION", "action": "TURN_ON", "target": "LIGHTS"}
-        if "turn off" in text and "light" in text:
-            return {"type": "LOCAL_ACTION", "action": "TURN_OFF", "target": "LIGHTS"}
-
-        # Word-list, no substring: avoids matching "time" inside e.g.
-        # "sometimes". The LLM answers this WRONG ("I don't have access to
-        # real-time clock data") when the machine actually knows the time
-        # -- resolved here, no LLM round-trip, deterministic.
-        if "time" in words:
-            return {"type": "LOCAL_ACTION", "action": "QUERY", "target": "TIME"}
-        if "date" in words:
-            return {"type": "LOCAL_ACTION", "action": "QUERY", "target": "DATE"}
+        if self._language == "Spanish":
+            if "enciende" in text and "luz" in text:
+                return {"type": "LOCAL_ACTION", "action": "TURN_ON", "target": "LIGHTS"}
+            if "apaga" in text and "luz" in text:
+                return {"type": "LOCAL_ACTION", "action": "TURN_OFF", "target": "LIGHTS"}
+            # Word-list, no substring: "hora" como substring matchea "ahora"
+            # ("¿y ahora qué hacemos?"), que no tiene nada que ver con pedir
+            # la hora. El LLM contesta esto MAL ("no tengo acceso al reloj
+            # en tiempo real") cuando la máquina sí sabe la hora -- resuelto
+            # acá, sin ida y vuelta al LLM, determinístico.
+            if "hora" in words or "horas" in words:
+                return {"type": "LOCAL_ACTION", "action": "QUERY", "target": "TIME"}
+            if "fecha" in words or ("qué" in words and "día" in words and "es" in words):
+                return {"type": "LOCAL_ACTION", "action": "QUERY", "target": "DATE"}
+        else:
+            if "turn on" in text and "light" in text:
+                return {"type": "LOCAL_ACTION", "action": "TURN_ON", "target": "LIGHTS"}
+            if "turn off" in text and "light" in text:
+                return {"type": "LOCAL_ACTION", "action": "TURN_OFF", "target": "LIGHTS"}
+            # Word-list, no substring: avoids matching "time" inside e.g.
+            # "sometimes". The LLM answers this WRONG ("I don't have access
+            # to real-time clock data") when the machine actually knows the
+            # time -- resolved here, no LLM round-trip, deterministic.
+            if "time" in words:
+                return {"type": "LOCAL_ACTION", "action": "QUERY", "target": "TIME"}
+            if "date" in words:
+                return {"type": "LOCAL_ACTION", "action": "QUERY", "target": "DATE"}
 
 
         # Antes escalaba a System 2 apenas aparecía una palabra tipo "cómo"
