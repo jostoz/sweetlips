@@ -227,6 +227,64 @@ label es dinámico.
   presupuesto porque el usuario ya sabe que "está pensando" (con un
   sonido, no una frase hablada -- menos intrusivo, más rápido).
 
+- **TTS nativo de Windows (SAPI5) en vez de Kokoro-FastAPI**: investigado
+  como alternativa sin GPU para eliminar de raíz la contención de
+  cómputo entre R2T2 y Kokoro (ver arriba). Windows trae voces "OneCore"
+  clásicas (David/Zira/Mark en inglés, Raul/Sabina en español) gratis y
+  locales, pero no se ven vía SAPI5 clásico (`SAPI.SpVoice`/
+  `System.Speech`) por defecto -- solo vía la API WinRT
+  `Windows.Media.SpeechSynthesis`, cuyo binding de Python en PyPI
+  (`winrt-Windows.Media.SpeechSynthesis` 3.2.1) no expone `AllVoices`
+  (confirmado revisando el binding nativo) así que no se puede elegir
+  voz por idioma con ese paquete. Solución: `tools/add-onecore-voices.ps1`
+  copia las claves de registro de OneCore al namespace clásico de SAPI5
+  (aportado por el usuario, basado en
+  https://github.com/microsoft/VibeVoice) -- con eso, `SAPI.SpVoice`
+  ve las 5 voces y sí permite seleccionar por nombre. Medido: 30-61ms,
+  sin GPU.
+  - Las voces "Natural" de Windows 11 (Ava, Jenny, Aria...) suenan mucho
+    mejor, pero Microsoft las bloquea a propósito para apps de
+    terceros: confirmado leyendo `AppxManifest.xml` del paquete
+    instalado -- están registradas como `windows.appExtension` tipo
+    `com.microsoft.voice.model.1`, consumible solo por el propio
+    Narrador, no por `AllVoices` ni SAPI5. Documentado independientemente
+    en Wikipedia/GitHub: *"as of 2024, no other third-party applications
+    are able to use these voices in any way, shape or form"*.
+  - Desbloqueadas de todos modos con
+    [NaturalVoiceSAPIAdapter](https://github.com/gexgd0419/NaturalVoiceSAPIAdapter)
+    (955★, MIT) -- extrae claves de cifrado de archivos del sistema
+    para exponerlas como motor SAPI5 normal. El propio autor lo describe
+    como *"más un hack que una solución propia"*, no soportado por
+    Microsoft, puede romperse en cualquier actualización de Windows.
+    Usuario aceptó el riesgo explícitamente tras ser advertido dos veces
+    (incluida la advertencia del propio proyecto de que la última
+    versión de las voces del Store ya no es compatible -- hubo que usar
+    versiones viejas de los MSIX, ver su wiki
+    "Narrator-natural-voice-download-links"). Instalado en
+    `tmp_voice_download/` (fuera de git, DLLs COM registradas desde esa
+    ruta exacta -- **no mover ni borrar sin reinstalar**, ver
+    `.gitignore`).
+  - Desbloqueadas dos familias: voces locales (ej. "Microsoft Jenny
+    (Natural)", 147ms, sin red) y voces "Online" (ej. "Microsoft Ava
+    Online (Natural)", "Microsoft Dalia Online (Natural)" en español --
+    llamada gratis al backend de "Leer en voz alta" de Edge, sin API
+    key, pero 1.2-1.9s medido, MÁS LENTO que Kokoro). El usuario eligió
+    las voces Online (Ava/Dalia) pese a la latencia, priorizando calidad
+    de voz -- decisión explícita, documentada acá para no repetir la
+    pregunta.
+  - `services/windows_tts.py`: `WindowsTTSService`, mismo patrón que
+    `KokoroGPUTTSService` (`run_tts` como generador async de
+    `TTSAudioRawFrame`), pero usando `win32com.client` (COM síncrono) en
+    vez de streaming HTTP -- la síntesis completa corre en un hilo
+    aparte (`run_in_executor`) porque SAPI5 no soporta streaming
+    incremental real como la respuesta HTTP de Kokoro; el audio se
+    trocea recién después de completarse toda la síntesis. Formato
+    verificado: `SpeechAudioFormatType` 18 = 16kHz 16-bit mono (coincide
+    matemáticamente bytes/2/16000 con la duración real medida).
+  - Kokoro-FastAPI queda como alternativa disponible
+    (`services/kokoro_gpu_tts.py`) si se quiere volver atrás.
+
+
 
 ## Referencia: otros modelos ASR/TTS open-source (no usados, no aplica hoy)
 

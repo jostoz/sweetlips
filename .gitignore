@@ -5,6 +5,11 @@ pretrained_models/
 # Repos de terceros clonados como referencia/instalación (R2T2, FireRedVAD)
 vendor/
 
+# NaturalVoiceSAPIAdapter instalado (DLLs COM registradas desde esta
+# ruta exacta -- NO mover/borrar sin re-registrar, ver README "TTS
+# nativo de Windows"). Third-party, no versionar.
+tmp_voice_download/
+
 # Entornos virtuales
 .venv/
 venv/
