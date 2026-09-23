@@ -178,6 +178,32 @@ label es dinámico.
   fácil sin separar las cargas en GPUs distintas -- aceptado como costo
   estructural de la arquitectura en cascada (mismo trade-off que la
   decisión de no migrar a un modelo speech-to-speech unificado).
+- **Truncamiento residual de la última palabra en R2T2, ~40% determinístico
+  (confirmado con `tools/test_r2t2_truncation.py`)**: script de
+  reproducción (sintetiza frases con Kokoro, las manda directo a R2T2 por
+  WebSocket, sin pipecat ni micrófono real) muestra que 3 de 7 frases de
+  prueba pierden la última palabra SIEMPRE, en 3+ corridas idénticas --
+  no es ruido aleatorio ("qué hora es" -> "qué hora", "prendé la luz" ->
+  "prende la", "...propiedad privada" -> "...propiedad priv"). Confirmado
+  que NO es un bug de nuestro pipeline: revisado el código fuente de
+  `STTService` (pipecat) -- `process_audio_frame()` no gatea por estado
+  de VAD, el audio sigue fluyendo a R2T2 continuo durante toda la ventana
+  de gracia antes de `flush_final()`. Tampoco es el timeout de
+  `flush_final()` (ya subido a 1.2s) ni la falta de silencio de cola (el
+  test agrega 0.5-1.0s, mismo resultado). **Hipótesis descartada
+  activamente**: `first_max_new_tokens` en el manejo del EOS de
+  `ws_server.py` (`asr_stream_api_v1`, línea ~1007) es
+  `max(1, (step+lookahead)/1280) = 4` -- subido a `max(16, ...)` en vivo,
+  reiniciado el servidor (~5min), re-corrido el test: **mismo resultado
+  exacto, ningún cambio**. Revertido. El cuello de botella no es
+  presupuesto de tokens de generación -- probablemente algo en cómo se
+  codifica/pierde el audio de la última palabra antes de llegar a esa
+  etapa (dentro de `asr_model.init_streaming_state`/
+  `finish_streaming_transcribe_no_reset`, código del paquete del modelo,
+  no de `ws_server.py`). Sin investigar más a fondo por hoy -- afecta
+  desproporcionadamente frases cortas de 2-3 palabras, que son
+  justo el patrón típico de las acciones locales (hora/luces).
+
 
 - **Router fast/slow (patrón portado de FXPerto `QueryRouter`)**: Jev ya
   no manda todo por el mismo presupuesto de latencia. `_is_slow_path()`
