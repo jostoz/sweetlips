@@ -12,6 +12,7 @@ Decide, por cada `TranscriptionFrame` confirmado:
 from __future__ import annotations
 
 import asyncio
+import time
 
 import numpy as np
 
@@ -159,6 +160,15 @@ class JevSystem1Processor(FrameProcessor):
         pero más lento SIEMPRE, incluso cuando el usuario sí terminó)."""
         self._user_speaking = False
         self._sample_rate = 16000
+        self._turn_started_at: float | None = None
+        """Timestamp (time.monotonic()) del primer VADUserStartedSpeakingFrame
+        de un turno todavía sin resolver. None cuando no hay turno abierto.
+        Ver _MAX_TURN_DURATION_SECS: sin esto, ruido de fondo continuo (TV,
+        música -- sin pausas de silencio reales) deja el turno abierto para
+        siempre, porque VAD nunca dispara VADUserStoppedSpeakingFrame y por
+        lo tanto ni el debounce ni smart-turn se llegan a evaluar. Bug real
+        confirmado en vivo: turno de más de un minuto acumulando texto sin
+        resolver con la TV de fondo."""
 
     async def setup(self, setup) -> None:
         await super().setup(setup)
@@ -211,6 +221,11 @@ class JevSystem1Processor(FrameProcessor):
         if isinstance(frame, InputAudioRawFrame):
             if self._smart_turn is not None:
                 self._smart_turn.append_audio(frame.audio, self._user_speaking)
+            if (
+                self._turn_started_at is not None
+                and time.monotonic() - self._turn_started_at > self._MAX_TURN_DURATION_SECS
+            ):
+                await self._force_reset_stuck_turn()
             await self.push_frame(frame, direction)
             return
 
@@ -219,6 +234,8 @@ class JevSystem1Processor(FrameProcessor):
             # análisis de fin de turno: cancelar lo pendiente, seguir
             # acumulando en el mismo turno (NO resetear confirmed_text).
             self._user_speaking = True
+            if self._turn_started_at is None:
+                self._turn_started_at = time.monotonic()
             if self._pending_escalate_task is not None:
                 self._pending_escalate_task.cancel()
                 self._pending_escalate_task = None
@@ -237,6 +254,35 @@ class JevSystem1Processor(FrameProcessor):
             return
 
         await self.push_frame(frame, direction)
+
+    _MAX_TURN_DURATION_SECS = 15.0
+    """Tope duro: si un turno lleva abierto más de esto sin que VAD dispare
+    VADUserStoppedSpeakingFrame, se descarta a la fuerza (ver
+    _force_reset_stuck_turn). Chequeado en cada InputAudioRawFrame (frames
+    de ~20-30ms, barato). Bug real: TV/música de fondo sin pausas de
+    silencio deja el turno abierto indefinidamente -- el AEC (WASAPI
+    loopback) sólo cancela el eco de lo que el PROPIO sistema reproduce, no
+    audio ambiente de una fuente separada."""
+
+    async def _force_reset_stuck_turn(self) -> None:
+        print(
+            f'[Jev] turno atascado >{self._MAX_TURN_DURATION_SECS:.0f}s sin silencio '
+            f'(¿ruido de fondo?) -- descartando: "{self.confirmed_text.strip()[:80]}..."',
+            flush=True,
+        )
+        self.confirmed_text = ""
+        self._mute_watch_text = ""
+        self._turn_started_at = None
+        if self._pending_escalate_task is not None:
+            self._pending_escalate_task.cancel()
+            self._pending_escalate_task = None
+        if self._r2t2_stt is not None:
+            # Fuerza a R2T2 a cerrar y reabrir la conexión (ver flush_final):
+            # sin esto, el turno "atascado" en el servidor seguiría
+            # acumulando audio/texto viejo para la próxima vez que sí haya
+            # silencio real.
+            await self._r2t2_stt.flush_final()
+
 
     _SMART_TURN_INCOMPLETE_FALLBACK_SECS = 2.5
     """Si el modelo de smart-turn dice INCOMPLETE (cree que el usuario va a
@@ -323,6 +369,7 @@ class JevSystem1Processor(FrameProcessor):
             print("[Jev] -> interrupción detectada, cortando TTS", flush=True)
             await self.broadcast_interruption()
             self.confirmed_text = ""
+            self._turn_started_at = None
             return
 
 
@@ -340,6 +387,7 @@ class JevSystem1Processor(FrameProcessor):
             result_speech = execute_local_command(decision["action"], decision["target"])
             print(f'[Jev] -> acción local: {decision["action"]} {decision["target"]} => "{result_speech}"', flush=True)
             self.confirmed_text = ""
+            self._turn_started_at = None
             # TTSSpeakFrame (no TextFrame): habla directo sin pasar por
             # System2PromptBridge. Bug real encontrado en vivo: con
             # TextFrame, System2PromptBridge lo interceptaba como si
@@ -368,6 +416,7 @@ class JevSystem1Processor(FrameProcessor):
         prompt = self.confirmed_text.strip()
         latency_probe.mark_turn_start()
         self.confirmed_text = ""
+        self._turn_started_at = None
         if _is_slow_path(prompt):
             # Slow path (patrón FXPerto QueryRouter): chime no hablado
             # (dos notas ascendentes, audio crudo) + TextFrame con la
