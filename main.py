@@ -88,14 +88,21 @@ async def main():
         vad_analyzer=FireRedVADAnalyzer(
             params=VADParams(
                 # 0.2s (default) corta la frase en pedacitos con cualquier
-                # micro-pausa/respiración natural. Con smart-turn activo
-                # (ver services/jev_system1.py) el VAD ya NO tiene que ser
-                # el que decide "¿terminó de verdad?" -- solo necesita
-                # detectar que hubo silencio para disparar el análisis
-                # semántico. Bajado de 0.7s a 0.4s: el modelo es el que
-                # ahora filtra los falsos cortes (INCOMPLETE si a mitad de
-                # idea), así que no hace falta que el VAD sea conservador.
-                stop_secs=0.4,
+                # micro-pausa/respiración natural. Se probó bajar a 0.4s
+                # confiando en que smart-turn (ver services/jev_system1.py)
+                # compensaría marcando INCOMPLETE los cortes falsos -- pero
+                # smart-turn solo se evalúa DESPUÉS de que VAD ya decidió
+                # "el usuario paró", nunca ve el resto de lo que la persona
+                # iba a decir si VAD corta antes de tiempo. Confirmado en
+                # vivo: cortes sistemáticos en pausas naturales de pensar
+                # ("the socialism and [pausa buscando la palabra]"),
+                # marcados COMPLETE porque hasta ahí sonaba terminado --
+                # smart-turn no puede predecir audio que todavía no llegó.
+                # Vuelto a 0.7s: la causa real de los cortes no era R2T2
+                # (investigado a fondo, ver README) ni el grace period
+                # (medido 0/12 salvados en inglés) -- era este timer
+                # cortando antes de que la persona terminara de hablar.
+                stop_secs=0.7,
             )
         )
     )  # Capa 0: VAD acústico (FireRedVAD streaming).
