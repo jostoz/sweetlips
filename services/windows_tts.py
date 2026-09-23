@@ -63,9 +63,15 @@ _SAFT_16kHz16BitMono = 18
 # 16000 coincide con la duración real del audio sintetizado.
 
 _VOICE_NAME_BY_LANG = {
-    "English": "Microsoft Ava Online (Natural)",
-    "Spanish": "Microsoft Dalia Online (Natural)",
+    "English": "Microsoft Jenny (Natural)",
+    "Spanish": "Microsoft Dalia (Natural)",
 }
+# Locales, no "Online": no dependen de red (backend de Edge Read Aloud).
+# Medido: Jenny 147ms vs Ava Online 1.2-1.9s -- corregido tras notar que
+# ya teníamos una voz local funcionando y elegimos la de red por error.
+# El match de nombre es por substring ("Microsoft Jenny (Natural)" in
+# GetDescription()) -- no ambigua con "...Online (Natural)" porque la
+# palabra "Online" se inserta en el medio, rompiendo la coincidencia.
 
 
 class WindowsTTSService(TTSService):
@@ -119,11 +125,31 @@ class WindowsTTSService(TTSService):
         finally:
             pythoncom.CoUninitialize()
 
+    _SYNTHESIS_TIMEOUT_SECS = 6.0
+    """Tope duro para la síntesis (llamada de red bloqueante a Ava/Dalia
+    Online). Bug real visto en vivo: un turno se colgó ~12.6s sin ningún
+    error ni log -- SAPI5/win32com no tiene forma de cancelar una llamada
+    COM bloqueante en curso desde otro hilo, así que el hilo del
+    executor puede seguir bloqueado de fondo tras el timeout (se
+    descarta su resultado cuando complete, inofensivo), pero al menos
+    el pipeline no se queda esperando para siempre -- sigue con el
+    próximo turno."""
+
     @traced_tts
     async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame, None]:
         try:
             await self.start_tts_usage_metrics(text)
-            audio = await asyncio.get_event_loop().run_in_executor(None, self._synthesize_sync, text)
+            try:
+                audio = await asyncio.wait_for(
+                    asyncio.get_event_loop().run_in_executor(None, self._synthesize_sync, text),
+                    timeout=self._SYNTHESIS_TIMEOUT_SECS,
+                )
+            except asyncio.TimeoutError:
+                yield ErrorFrame(
+                    error=f"Windows TTS (SAPI5) timeout tras {self._SYNTHESIS_TIMEOUT_SECS:.0f}s "
+                    "(la voz Online no respondió a tiempo)"
+                )
+                return
             await self.stop_ttfb_metrics()
             if not audio:
                 return
