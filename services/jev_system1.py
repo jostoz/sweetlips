@@ -185,6 +185,7 @@ class JevSystem1Processor(FrameProcessor):
         lo tanto ni el debounce ni smart-turn se llegan a evaluar. Bug real
         confirmado en vivo: turno de más de un minuto acumulando texto sin
         resolver con la TV de fondo."""
+        self._watchdog_task: asyncio.Task | None = None
 
     async def setup(self, setup) -> None:
         await super().setup(setup)
@@ -198,6 +199,16 @@ class JevSystem1Processor(FrameProcessor):
         await asyncio.get_event_loop().run_in_executor(
             None, semantic_jev_router.warm_up, self._language
         )
+        self._watchdog_task = asyncio.create_task(self._max_turn_watchdog())
+        # Bug real visto en vivo: el chequeo de _MAX_TURN_DURATION_SECS vivía
+        # antes DENTRO del handler de InputAudioRawFrame -- si el transporte
+        # de audio se congela por completo (sin excepción, sin log, mic
+        # simplemente deja de entregar frames), ese chequeo nunca se
+        # disparaba porque depende de que sigan llegando frames nuevos para
+        # evaluarse. Turno quedó "escuchado: Hola, cómo te" colgado 7+
+        # minutos sin ningún error. Watchdog independiente (loop propio,
+        # no depende de que fluya audio) sí lo detecta pase lo que pase río
+        # arriba.
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -239,11 +250,6 @@ class JevSystem1Processor(FrameProcessor):
         if isinstance(frame, InputAudioRawFrame):
             if self._smart_turn is not None:
                 self._smart_turn.append_audio(frame.audio, self._user_speaking)
-            if (
-                self._turn_started_at is not None
-                and time.monotonic() - self._turn_started_at > self._MAX_TURN_DURATION_SECS
-            ):
-                await self._force_reset_stuck_turn()
             await self.push_frame(frame, direction)
             return
 
@@ -276,16 +282,38 @@ class JevSystem1Processor(FrameProcessor):
     _MAX_TURN_DURATION_SECS = 15.0
     """Tope duro: si un turno lleva abierto más de esto sin que VAD dispare
     VADUserStoppedSpeakingFrame, se descarta a la fuerza (ver
-    _force_reset_stuck_turn). Chequeado en cada InputAudioRawFrame (frames
-    de ~20-30ms, barato). Bug real: TV/música de fondo sin pausas de
-    silencio deja el turno abierto indefinidamente -- el AEC (WASAPI
-    loopback) sólo cancela el eco de lo que el PROPIO sistema reproduce, no
-    audio ambiente de una fuente separada."""
+    _force_reset_stuck_turn). Chequeado por un watchdog independiente
+    (_max_turn_watchdog, loop propio con su timer, NO depende de que
+    lleguen frames de audio) -- bug real: un chequeo anterior vivía dentro
+    del handler de InputAudioRawFrame y nunca se disparaba si el
+    transporte de audio se congelaba por completo (turno quedó colgado
+    7+ minutos sin ningún error ni log). También cubre el caso original:
+    TV/música de fondo sin pausas de silencio deja el turno abierto
+    indefinidamente -- el AEC (WASAPI loopback) sólo cancela el eco de lo
+    que el PROPIO sistema reproduce, no audio ambiente de una fuente
+    separada."""
+
+    _MAX_TURN_WATCHDOG_INTERVAL_SECS = 5.0
+    """Cada cuánto revisa el watchdog si hay un turno atascado. No hace
+    falta más fino que esto -- el tope real es _MAX_TURN_DURATION_SECS."""
+
+    async def _max_turn_watchdog(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(self._MAX_TURN_WATCHDOG_INTERVAL_SECS)
+                if (
+                    self._turn_started_at is not None
+                    and time.monotonic() - self._turn_started_at > self._MAX_TURN_DURATION_SECS
+                ):
+                    await self._force_reset_stuck_turn()
+        except asyncio.CancelledError:
+            pass
 
     async def _force_reset_stuck_turn(self) -> None:
         print(
             f'[Jev] turno atascado >{self._MAX_TURN_DURATION_SECS:.0f}s sin silencio '
-            f'(¿ruido de fondo?) -- descartando: "{self.confirmed_text.strip()[:80]}..."',
+            f'(¿ruido de fondo o transporte de audio congelado?) -- descartando: '
+            f'"{self.confirmed_text.strip()[:80]}..."',
             flush=True,
         )
         self.confirmed_text = ""
