@@ -45,9 +45,29 @@ async def main():
         params=LocalAudioTransportParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
-            # Usa el micrófono default de Windows (Micrófono Steren COM-126,
-            # verificado funcional). El Realtek USB Audio aparecía
-            # desconectado ("Unknown" en Device Manager) al probarlo.
+            # Fijado explícito (no "default de Windows"): el equipo tiene
+            # DOS micrófonos -- "Steren COM-126" (integrado a la webcam,
+            # confirmado por su entrada duplicada como Camera en el
+            # registro de dispositivos) y "Realtek USB Audio" (el externo
+            # real, USB aparte). El comentario viejo acá decía que se
+            # usaba Steren porque en su momento Realtek aparecía
+            # desconectado en Device Manager -- eso cambió, Realtek ya
+            # funciona y es el mic correcto a usar, pero depender del
+            # "default de Windows" es frágil (cambia solo si se
+            # conecta/desconecta algo, sin aviso). Índice 17 = "Micrófono
+            # (Realtek USB Audio)" vía host API WASAPI (no MME/DirectSound/
+            # WDM-KS, que pyaudio también expone como entradas separadas
+            # para el mismo dispositivo físico). Probado índice 17
+            # (WASAPI) primero por consistencia con el loopback del AEC,
+            # pero WASAPI exclusive/shared no acepta 16kHz directo del
+            # dispositivo (nativo 48kHz) -- "[Errno -9997] Invalid sample
+            # rate", falla real en vivo. MME (índice 1) sí resamplea
+            # automáticamente vía portaudio, que es lo que ya funcionaba
+            # con el "default de Windows" anterior.
+            # Verificar con
+            # `python -c "import pyaudio; p=pyaudio.PyAudio(); [print(i, p.get_device_info_by_index(i)['name'], p.get_host_api_info_by_index(p.get_device_info_by_index(i)['hostApi'])['name']) for i in range(p.get_device_count())]"`
+            # si cambia el hardware.
+            input_device_index=1,
             audio_in_sample_rate=16000,
             # AEC (WebRTC AEC3) con referencia real por WASAPI loopback (ver
             # services/aec_filter.py) -- el primer intento (tapear frames
