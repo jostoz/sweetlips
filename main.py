@@ -34,7 +34,7 @@ from services.windows_tts import WindowsTTSService
 from services import latency_probe
 from services.r2t2_stt import ConfuciusR2T2Service
 from services.system2_llm import (
-    DEFAULT_SYSTEM_PROMPT_EN,
+    DEFAULT_SYSTEM_PROMPT,
     System2PromptBridge,
     System2ResponseCollector,
     build_shared_context,
@@ -129,7 +129,7 @@ async def main():
     # Capa 3: System 2 (razonamiento). Groq (cloud, API compatible con
     # OpenAI, inferencia LPU muy rápida) para no competir por VRAM con el
     # servidor R2T2 en la GPU local.
-    system2_context = build_shared_context(system_prompt=DEFAULT_SYSTEM_PROMPT_EN)
+    system2_context = build_shared_context(system_prompt=DEFAULT_SYSTEM_PROMPT)
     system2_prompt_bridge = System2PromptBridge(system2_context)
     system2_llm = OpenAILLMService(
         settings=OpenAILLMService.Settings(
