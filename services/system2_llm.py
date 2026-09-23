@@ -134,9 +134,17 @@ class System2ResponseCollector(FrameProcessor):
     """2 respuestas degeneradas SEGUIDAS (no 1) para resetear -- reduce el
     riesgo de resetear por una única respuesta corta legítima aislada."""
 
-    def __init__(self, context: LLMContext, **kwargs):
+    def __init__(self, context: LLMContext, jev=None, **kwargs):
         super().__init__(**kwargs)
         self._context = context
+        self._jev = jev
+        """JevSystem1Processor opcional. Jev necesita saber QUÉ está
+        diciendo el bot para distinguir eco (su propia voz volviendo por
+        el mic) de una interrupción real del usuario -- sin eso, la única
+        forma segura de interrumpir es una palabra mágica ("cállate"), y
+        hablarle encima normalmente no funciona. Los frames de texto del
+        LLM van pipeline abajo (LLM -> collector -> TTS), no vuelven a
+        pasar por Jev, que está más arriba: por eso se lo pasamos acá."""
         self._buffer: list[str] = []
         self._consecutive_degenerate = 0
         """Bug real visto en vivo (espiral de degradación de contexto):
@@ -174,6 +182,8 @@ class System2ResponseCollector(FrameProcessor):
             if full_text:
                 self._context.add_message({"role": "assistant", "content": full_text})
                 print(f"[System2] respuesta del LLM: \"{full_text}\"", flush=True)
+                if self._jev is not None:
+                    self._jev.set_bot_text(full_text)
                 if len(full_text.strip()) <= self._DEGENERATE_REPLY_MAX_LEN:
                     self._consecutive_degenerate += 1
                 else:

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import unicodedata
 
 import numpy as np
 
@@ -54,6 +55,15 @@ _INTERRUPT_PREFIX_LEN = 4
 # (bug real, visto en vivo: "pará, cállate" llegó como "para cáll" y se
 # mandó al LLM en vez de interrumpir). Alcanza con los primeros 4
 # caracteres de cada palabra para no confundirse con otras.
+
+
+def _strip_accents(text: str) -> str:
+    """Normaliza acentos para comparar texto del ASR contra el del bot:
+    el ASR puede escribir "producción" y el LLM "produccion" (o al
+    revés), y esa diferencia no debe romper la detección de eco."""
+    return "".join(
+        c for c in unicodedata.normalize("NFD", text) if unicodedata.category(c) != "Mn"
+    )
 
 
 def _has_interrupt_word(normalized_text: str, language: str) -> bool:
@@ -208,7 +218,36 @@ class JevSystem1Processor(FrameProcessor):
         -- cuenta cuántas veces el grace period evita un corte real
         (usuario retoma, "saves") vs cuántas veces solo agrega espera sin
         que hiciera falta (usuario no retoma, "wastes")."""
+        self._bot_text_norm = ""
+        """Última respuesta del bot, normalizada, para distinguir eco de
+        voz real durante el barge-in (la setea System2ResponseCollector)."""
 
+
+    _BARGE_IN_MIN_CHARS = 12
+    """Mínimo de texto acumulado mientras el bot habla para tratarlo como
+    interrupción real y no como un fragmento suelto de eco. ~2-3 palabras:
+    suficiente para que el AEC no genere falsos positivos con residuos
+    cortos, pero corto como para no obligar a la persona a decir una frase
+    entera antes de que el bot la escuche."""
+
+    _BARGE_IN_ECHO_OVERLAP = 0.6
+    """Fracción de palabras de lo escuchado que aparecen en la respuesta
+    del bot para considerarlo eco. Por debajo de eso asumimos voz real."""
+
+    def set_bot_text(self, text: str) -> None:
+        """La llama System2ResponseCollector con cada respuesta del LLM."""
+        self._bot_text_norm = _strip_accents(text.lower())
+
+    def _looks_like_bot_echo(self, heard: str) -> bool:
+        """True si lo escuchado parece ser la propia voz del bot volviendo
+        por el micrófono (el AEC no cancela del todo), no el usuario."""
+        if not self._bot_text_norm:
+            return False
+        words = [w for w in _strip_accents(heard.lower()).split() if len(w) > 2]
+        if not words:
+            return True  # solo ruido/fragmentos cortos: tratar como eco.
+        hits = sum(1 for w in words if w in self._bot_text_norm)
+        return (hits / len(words)) >= self._BARGE_IN_ECHO_OVERLAP
     async def setup(self, setup) -> None:
         await super().setup(setup)
         if self._smart_turn is not None:
@@ -454,24 +493,47 @@ class JevSystem1Processor(FrameProcessor):
         normalized = self.confirmed_text.strip().lower()
 
         if self._bot_speaking:
-            # Se probó relajar esto (confiar en el AEC) y el AEC no
-            # cancela lo suficiente: el bot volvió a escucharse a sí
-            # mismo ("se está escuchando otra vez", confirmado en vivo).
-            # Vuelta a la regla segura: mientras el bot habla, ignoramos
-            # todo salvo un barge-in explícito.
+            # Mientras el bot habla NO se puede confiar ciegamente en lo
+            # que entra por el mic: el AEC no cancela del todo y el bot se
+            # escuchaba a sí mismo (confirmado en vivo). Pero muteo total
+            # tampoco sirve: hablarle encima normalmente no funcionaba, el
+            # turno se descartaba entero y quedaba como "no me entiende"
+            # (bug reportado: "a veces inicio a hablar antes de que
+            # termine y no me entiende").
             #
-            # confirmed_text se resetea por delta (no filtrar eco a un
-            # turno real), pero eso rompía la detección de interrupción
-            # cuando R2T2 parte la palabra en varios deltas ("cállate"
-            # -> "Cá"+"ll"+"ate": cada fragmento revisado aislado nunca
-            # matcheaba con confirmed_text solo). _mute_watch_text sí
-            # acumula entre deltas (acotado) para cubrir ese caso.
-            self._mute_watch_text = (self._mute_watch_text + frame.text)[-40:]
-            if _has_interrupt_word(self._mute_watch_text.lower(), self._language):
+            # Solución: distinguir eco de voz real comparando contra lo
+            # que el bot ESTÁ diciendo (set_bot_text, ver
+            # System2ResponseCollector). Si lo escuchado es parte de la
+            # respuesta del bot, es eco -> ignorar. Si es texto sustancial
+            # y distinto, es el usuario interrumpiendo de verdad.
+            #
+            # _mute_watch_text acumula entre deltas (acotado): el ASR
+            # parte las palabras en fragmentos y revisarlos aislados nunca
+            # matchea ("cállate" -> "Cá"+"ll"+"ate").
+            self._mute_watch_text = (self._mute_watch_text + frame.text)[-80:]
+            heard = self._mute_watch_text.strip()
+
+            if _has_interrupt_word(heard.lower(), self._language):
                 print("[Jev] -> interrupción detectada, cortando TTS", flush=True)
                 self._interrupted_recently = True
                 await self.broadcast_interruption()
                 self._mute_watch_text = ""
+                self.confirmed_text = ""
+                return
+
+            if len(heard) >= self._BARGE_IN_MIN_CHARS and not self._looks_like_bot_echo(heard):
+                print(f'[Jev] -> barge-in real (no es eco): "{heard}"', flush=True)
+                self._interrupted_recently = True
+                await self.broadcast_interruption()
+                # El texto se CONSERVA como arranque del turno del usuario
+                # (antes se tiraba): es lo que dijo mientras el bot hablaba.
+                self.confirmed_text = heard
+                self._mute_watch_text = ""
+                self._bot_speaking = False
+                if self._turn_started_at is None:
+                    self._turn_started_at = time.monotonic()
+                return
+
             self.confirmed_text = ""
             return
 

@@ -159,7 +159,10 @@ async def main():
         api_key=os.environ["GROQ_API_KEY"],
         base_url="https://api.groq.com/openai/v1",
     )
-    system2_response_collector = System2ResponseCollector(system2_context)
+    # jev_router: para que Jev sepa qué está diciendo el bot y pueda
+    # distinguir su eco de una interrupción real del usuario (barge-in
+    # sin palabra mágica -- ver _looks_like_bot_echo en jev_system1.py).
+    system2_response_collector = System2ResponseCollector(system2_context, jev=jev_router)
 
     # WindowsTTSService (SAPI5 nativo, sin GPU -- ver services/windows_tts.py
     # para el detalle completo de por qué y cómo). Voz local "Dalia
