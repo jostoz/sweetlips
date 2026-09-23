@@ -164,6 +164,21 @@ label es dinámico.
   para dejarle ~5GB de margen a Kokoro. Si vuelven a aparecer picos de
   latencia erráticos en el TTS, revisar `nvidia-smi` primero antes de
   sospechar de la voz/idioma.
+- **Contención residual de CÓMPUTO (no memoria), confirmada con
+  `nvidia-smi dmon` durante turnos reales**: incluso con VRAM sana
+  (~5GB libres), R2T2 mantiene la GPU con SM utilization oscilando
+  20-55% de forma CONTINUA mientras procesa el stream de audio en
+  tiempo real (no solo en picos por turno) -- Kokoro sintetizando en
+  ese momento mide 324-703ms en vez de los 170-300ms aislados (medido
+  con `curl` directo a Kokoro sin R2T2 activo, para descartar Docker/
+  observability-stack como causa -- confirmado que NO son el problema,
+  tiempos iguales con contenedores parados o corriendo). Es contención
+  de cómputo, no de memoria: dos modelos de inferencia real-time en la
+  misma GPU van a competir por ciclos aunque sobre VRAM. No hay fix
+  fácil sin separar las cargas en GPUs distintas -- aceptado como costo
+  estructural de la arquitectura en cascada (mismo trade-off que la
+  decisión de no migrar a un modelo speech-to-speech unificado).
+
 - **Router fast/slow (patrón portado de FXPerto `QueryRouter`)**: Jev ya
   no manda todo por el mismo presupuesto de latencia. `_is_slow_path()`
   en `services/jev_system1.py` clasifica el texto escalado con una
