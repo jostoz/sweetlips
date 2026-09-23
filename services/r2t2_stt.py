@@ -132,7 +132,7 @@ class ConfuciusR2T2Service(STTService):
         while not self._pending.empty():
             self._pending.get_nowait()
 
-    async def flush_final(self, timeout: float = 0.6) -> str:
+    async def flush_final(self, timeout: float = 1.2) -> str:
         """Fuerza a R2T2 a emitir cualquier delta que haya quedado
         procesando del audio ya enviado, antes de que Jev decida el texto
         final del turno.
@@ -146,6 +146,15 @@ class ConfuciusR2T2Service(STTService):
         Protocolo (ver docstring del módulo): mandar el string literal EOS
         fuerza al servidor a mandar el delta final y cerrar la conexión.
         Cierra la conexión actual, drena lo que haya llegado, y reabre.
+
+        timeout subido de 0.6s a 1.2s: con la contención de cómputo GPU
+        entre R2T2 y Kokoro (ver README, confirmada con nvidia-smi dmon
+        durante turnos reales), R2T2 puede tardar más de 0.6s en terminar
+        de procesar el audio pendiente bajo carga -- 0.6s no siempre
+        alcanzaba (bug real en vivo: "te estoy preguntando por la",
+        "gracias contin" seguían cortados incluso con este flush activo).
+        1.2s agrega latencia en el peor caso, pero solo se paga cuando de
+        verdad hace falta esperar más.
 
         Nota: se probó NO reabrir acá (delegarle la reconexión al hook
         `_process_assistant_turn` de STTService, esperando que dispare
