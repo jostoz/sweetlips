@@ -186,6 +186,14 @@ class JevSystem1Processor(FrameProcessor):
         confirmado en vivo: turno de más de un minuto acumulando texto sin
         resolver con la TV de fondo."""
         self._watchdog_task: asyncio.Task | None = None
+        self._grace_period_pending = False
+        self._grace_period_saves = 0
+        self._grace_period_wastes = 0
+        """Medición temporal (sesión de hoy) para decidir si
+        _SMART_TURN_COMPLETE_GRACE_SECS sigue valiendo la pena en inglés
+        -- cuenta cuántas veces el grace period evita un corte real
+        (usuario retoma, "saves") vs cuántas veces solo agrega espera sin
+        que hiciera falta (usuario no retoma, "wastes")."""
 
     async def setup(self, setup) -> None:
         await super().setup(setup)
@@ -263,6 +271,14 @@ class JevSystem1Processor(FrameProcessor):
             if self._pending_escalate_task is not None:
                 self._pending_escalate_task.cancel()
                 self._pending_escalate_task = None
+                if self._grace_period_pending:
+                    self._grace_period_saves += 1
+                    print(
+                        f"[Jev] grace period SALVÓ un corte (usuario retomó) -- "
+                        f"{self._grace_period_saves} salvados / {self._grace_period_saves + self._grace_period_wastes} totales",
+                        flush=True,
+                    )
+                    self._grace_period_pending = False
             await self.push_frame(frame, direction)
             return
 
@@ -351,6 +367,7 @@ class JevSystem1Processor(FrameProcessor):
         state, _ = await self._smart_turn.analyze_end_of_turn()
         self._pending_escalate_task = None
         if state == EndOfTurnState.COMPLETE:
+            self._grace_period_pending = True
             self._pending_escalate_task = asyncio.create_task(
                 self._debounced_turn_end(direction, delay=self._SMART_TURN_COMPLETE_GRACE_SECS)
             )
@@ -361,11 +378,20 @@ class JevSystem1Processor(FrameProcessor):
             )
 
     async def _debounced_turn_end(self, direction: FrameDirection, delay: float | None = None) -> None:
+        was_grace_period = self._grace_period_pending
         try:
             await asyncio.sleep(delay if delay is not None else self._TURN_END_DEBOUNCE_SECS)
         except asyncio.CancelledError:
             return
         self._pending_escalate_task = None
+        if was_grace_period:
+            self._grace_period_wastes += 1
+            self._grace_period_pending = False
+            print(
+                f"[Jev] grace period no hizo falta (usuario no retomó) -- "
+                f"{self._grace_period_saves} salvados / {self._grace_period_saves + self._grace_period_wastes} totales",
+                flush=True,
+            )
         if self._r2t2_stt is not None:
             tail = await self._r2t2_stt.flush_final()
             if tail:
