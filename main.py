@@ -152,14 +152,15 @@ async def main():
     system2_response_collector = System2ResponseCollector(system2_context)
 
     # WindowsTTSService (SAPI5 nativo, sin GPU -- ver services/windows_tts.py
-    # para el detalle completo de por qué y cómo). Voz "Ava Online
-    # (Natural)" (inglés): 1.2-1.9s de latencia por ser una llamada de red
-    # al backend de Edge, MÁS LENTA que Kokoro (170-300ms) -- decisión
-    # explícita del usuario, prioriza calidad de voz sobre latencia acá.
-    # Kokoro-FastAPI queda como alternativa (services/kokoro_gpu_tts.py,
-    # servidor en vendor/Kokoro-FastAPI/start-gpu.ps1, puerto 8880) si se
-    # quiere volver a probar.
-    tts = WindowsTTSService(language="English")
+    # para el detalle completo de por qué y cómo). Voz local "Dalia
+    # (Natural)" en español, aunque R2T2/LLM siguen en inglés -- decisión
+    # explícita del usuario: no vale la pena una voz en inglés no-HD
+    # (Jenny/Dalia son la línea "Natural" vieja, no "Natural HD" como
+    # Ava -- esa sí sonaba mejor pero solo existe como voz Online/cloud,
+    # ver services/windows_tts.py). Mezcla de idiomas (conversación en
+    # inglés, voz en español) es intencional, no un bug -- avisado al
+    # usuario que es inusual, decisión suya igual.
+    tts = WindowsTTSService(voice="Microsoft Dalia (Natural)")
     loopback_capture = WasapiLoopbackCapture(far_end_buffer)
     await loopback_capture.start()  # referencia far-end real (WASAPI loopback) para el AEC.
 
