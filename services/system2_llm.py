@@ -121,10 +121,41 @@ class System2PromptBridge(FrameProcessor):
 class System2ResponseCollector(FrameProcessor):
     """Guarda la respuesta del LLM en el contexto compartido (memoria multi-turno)."""
 
+    _DEGENERATE_REPLY_MAX_LEN = 2
+    """Respuestas de 1-2 caracteres ("Y", "T", "D", "Se") no son palabras
+    completas en español/inglés -- son síntoma de contexto corrupto, no
+    respuestas cortas legítimas (que suelen tener 3+ caracteres: "Sí",
+    "Ok", "Bien")."""
+
+    _DEGENERATE_REPLY_RESET_THRESHOLD = 2
+    """2 respuestas degeneradas SEGUIDAS (no 1) para resetear -- reduce el
+    riesgo de resetear por una única respuesta corta legítima aislada."""
+
     def __init__(self, context: LLMContext, **kwargs):
         super().__init__(**kwargs)
         self._context = context
         self._buffer: list[str] = []
+        self._consecutive_degenerate = 0
+        """Bug real visto en vivo (espiral de degradación de contexto):
+        turnos fragmentados a mitad de palabra ("está hoy to", "Cómo que
+        bien, gü") escalados por error confundieron al LLM (qwen3.8-27b),
+        que empezó a responder cada vez más corto ("Y" -> "Se" -> "T" ->
+        "D"), y cada respuesta degenerada se agregaba al historial
+        empeorando el patrón todavía más -- sin este contador, la espiral
+        no se recupera sola nunca. No arregla la causa raíz (por qué
+        llegan fragmentos a mitad de palabra -- posible imprecisión de
+        smart-turn/VAD en español, sigue sin investigar), pero corta la
+        espiral una vez que empieza."""
+
+    def _reset_context(self) -> None:
+        print(
+            "[System2] contexto degradado (2+ respuestas de 1-2 caracteres seguidas) "
+            "-- reseteando historial, se conserva el system prompt",
+            flush=True,
+        )
+        messages = self._context.messages
+        system_message = messages[0] if messages and messages[0].get("role") == "system" else None
+        self._context.set_messages([system_message] if system_message else [])
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -140,6 +171,13 @@ class System2ResponseCollector(FrameProcessor):
             if full_text:
                 self._context.add_message({"role": "assistant", "content": full_text})
                 print(f"[System2] respuesta del LLM: \"{full_text}\"", flush=True)
+                if len(full_text.strip()) <= self._DEGENERATE_REPLY_MAX_LEN:
+                    self._consecutive_degenerate += 1
+                else:
+                    self._consecutive_degenerate = 0
+                if self._consecutive_degenerate >= self._DEGENERATE_REPLY_RESET_THRESHOLD:
+                    self._reset_context()
+                    self._consecutive_degenerate = 0
             self._buffer = []
         # Deja pasar todo tal cual: el TTS consume esta misma secuencia de frames.
         await self.push_frame(frame, direction)
