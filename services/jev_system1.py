@@ -149,7 +149,7 @@ class JevSystem1Processor(FrameProcessor):
 
     def __init__(
         self,
-        r2t2_stt=None,
+        stt=None,
         smart_turn: BaseTurnAnalyzer | None = None,
         language: str = "English",
         **kwargs,
@@ -164,8 +164,8 @@ class JevSystem1Processor(FrameProcessor):
         self._bot_speaking = False
         self._unmute_task: asyncio.Task | None = None
         self._pending_escalate_task: asyncio.Task | None = None
-        self._r2t2_stt = r2t2_stt
-        """Referencia opcional a ConfuciusR2T2Service: si está seteada, se
+        self._stt = stt
+        """Referencia opcional al servicio de ASR (NemotronASRService): si está seteada, se
         le pide flush_final() antes de escalar (ver _debounced_turn_end)
         para no perder la cola de la última palabra dicha."""
         self._mute_watch_text = ""
@@ -355,12 +355,11 @@ class JevSystem1Processor(FrameProcessor):
         if self._pending_escalate_task is not None:
             self._pending_escalate_task.cancel()
             self._pending_escalate_task = None
-        if self._r2t2_stt is not None:
-            # Fuerza a R2T2 a cerrar y reabrir la conexión (ver flush_final):
-            # sin esto, el turno "atascado" en el servidor seguiría
-            # acumulando audio/texto viejo para la próxima vez que sí haya
-            # silencio real.
-            await self._r2t2_stt.flush_final()
+        if self._stt is not None:
+            # Fuerza al ASR a cerrar y reabrir el turno (ver flush_final):
+            # sin esto, el turno "atascado" seguiría acumulando audio/texto
+            # viejo para la próxima vez que sí haya silencio real.
+            await self._stt.flush_final()
 
 
     _SMART_TURN_INCOMPLETE_FALLBACK_SECS = 2.5
@@ -420,11 +419,11 @@ class JevSystem1Processor(FrameProcessor):
                 f"{self._grace_period_saves} salvados / {self._grace_period_saves + self._grace_period_wastes} totales",
                 flush=True,
             )
-        if self._r2t2_stt is not None:
-            tail = await self._r2t2_stt.flush_final()
+        if self._stt is not None:
+            tail = await self._stt.flush_final()
             if tail:
                 self.confirmed_text += tail
-                print(f'[Jev] flush R2T2 recuperó cola: "{tail}"', flush=True)
+                print(f'[Jev] flush ASR recuperó cola: "{tail}"', flush=True)
         await self._handle_turn_end(direction)
 
     async def _unmute_after_grace(self, after_interrupt: bool = False) -> None:

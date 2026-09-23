@@ -1,17 +1,20 @@
-"""Pipeline Edge: micrófono local -> FireRedVAD -> R2T2 (ASR append-only)
--> Jev (System 1) -> acción local / LLM cloud (System 2, Groq) ->
--> Kokoro TTS local -> altavoz.
+"""Pipeline Edge: micrófono local -> FireRedVAD -> Nemotron 3.5 ASR
+(streaming cache-aware) -> Jev (System 1) -> acción local / LLM cloud
+(System 2, Groq) -> Windows TTS local -> altavoz.
 
-Requiere pipecat-ai>=1.9.0 (API de servicios/transportes actual) y el
-paquete `fireredvad` (no está en PyPI; ver services/firered_vad.py). Ver
-README de cada servicio para instalar sus extras:
+Requiere pipecat-ai>=1.9.0 (API de servicios/transportes actual), el
+paquete `fireredvad` (no está en PyPI; ver services/firered_vad.py) y
+transformers>=5.13.0 (soporte de Nemotron3_5Asr). Ver README de cada
+servicio para instalar sus extras:
     pip install -r requirements.txt
 
 El LLM de System 2 ya NO es local: apunta a Groq (API compatible con
 OpenAI, inferencia LPU de baja latencia). Requiere la variable de entorno
-GROQ_API_KEY con una key válida de https://console.groq.com/keys. Se sacó
-LM Studio del pipeline porque competía por VRAM con el servidor R2T2
-(vLLM) en la misma GPU.
+GROQ_API_KEY con una key válida de https://console.groq.com/keys.
+
+Todo el pipeline corre nativo en Windows: el ASR anterior (R2T2) obligaba
+a un servidor aparte dentro de WSL2 porque vLLM no soporta Windows --
+Nemotron corre en-proceso vía Transformers y elimina esa dependencia.
 """
 
 import asyncio
@@ -32,7 +35,7 @@ from services.firered_vad import FireRedVADAnalyzer
 from services.jev_system1 import JevSystem1Processor
 from services.windows_tts import WindowsTTSService
 from services import latency_probe
-from services.r2t2_stt import ConfuciusR2T2Service
+from services.nemotron_stt import NemotronASRService
 from services.system2_llm import (
     DEFAULT_SYSTEM_PROMPT,
     System2PromptBridge,
@@ -106,24 +109,22 @@ async def main():
             )
         )
     )  # Capa 0: VAD acústico (FireRedVAD streaming).
-    # Servidor R2T2 corriendo dentro de WSL2 (ver README/ws): vLLM no soporta
-    # Windows nativo, por eso el motor vive en Linux y este cliente le habla
-    # por WebSocket. Arrancar antes: wsl -e bash -lc "cd ~/Confucius4-R2T2 && ./run_start_server.sh start --model_path ~/models/Confucius4-R2T2"
-    r2t2_stt = ConfuciusR2T2Service(
-        # 127.0.0.1 explícito, no "localhost": en esta máquina Windows
-        # "localhost" resuelve primero a IPv6 (::1), que no responde, y
-        # requests/urllib3 tarda ~2s en caer a IPv4 antes de conectar.
-        ws_uri="ws://127.0.0.1:8272/asr_stream_api_v1",
-        language="English",  # vuelta a inglés: la sesión de hoy investigó
-        # a fondo el truncamiento de la última palabra en español
-        # (tools/test_r2t2_truncation.py, ~40% determinístico en frases
-        # cortas) y descartó activamente varias hipótesis de fix (timeout
-        # de flush_final, silencio de cola, presupuesto de tokens del
-        # servidor) sin resolverlo -- R2T2 no tiene optimización nativa
-        # para español (apunta a chino/inglés). La prueba anterior en
-        # inglés confirmó transcripciones más completas. Con los fixes de
-        # hoy (router semántico, contexto, mic, watchdog) ya parametrizados
-        # por idioma, este es solo un cambio de 4 líneas en este archivo.
+    # Nemotron 3.5 ASR (NVIDIA, cache-aware FastConformer-RNNT) corriendo
+    # EN PROCESO en Windows -- ya no hace falta WSL2 ni un servidor
+    # WebSocket aparte: eso era una restricción de R2T2 (vLLM no soporta
+    # Windows nativo). Reemplazó a R2T2 tras medirlo en vivo contra las
+    # mismas 14 frases (7 ES + 7 EN, ver README): R2T2 truncaba la última
+    # palabra de forma consistente en ambos idiomas (reproducido también
+    # con un clone 100% upstream sin modificar, así que no era config
+    # nuestra), Nemotron no.
+    nemotron_stt = NemotronASRService(
+        # Español ahora es de primera clase: Nemotron lo lista como
+        # "transcription-ready" y mide WER 4.11% en FLEURS-es, MEJOR que
+        # su propio inglés (7.91%). La razón por la que el ASR estaba en
+        # inglés era la debilidad de R2T2 en español (apuntaba a
+        # chino/inglés) -- ya no aplica, y así deja de haber desajuste con
+        # el LLM y la voz TTS, que ya estaban en español.
+        language="Spanish",
     )
     # Smart-turn: modelo ONNX (viene empaquetado con pipecat, sin
     # descarga) que decide semánticamente si el usuario terminó de
@@ -131,7 +132,9 @@ async def main():
     # trade-off "timer corto = rápido pero corta palabras" / "timer largo
     # = preciso pero siempre lento" por una decisión real por turno.
     smart_turn = LocalSmartTurnAnalyzerV3()
-    jev_router = JevSystem1Processor(r2t2_stt=r2t2_stt, smart_turn=smart_turn, language="English")
+    jev_router = JevSystem1Processor(
+        stt=nemotron_stt, smart_turn=smart_turn, language="Spanish"
+    )
 
     # Capa 3: System 2 (razonamiento). Groq (cloud, API compatible con
     # OpenAI, inferencia LPU muy rápida) para no competir por VRAM con el
@@ -176,7 +179,7 @@ async def main():
         [
             transport.input(),  # Micro local (16 kHz) + AEC.
             vad,  # Capa 0: VAD acústico -> VADUserStarted/StoppedSpeakingFrame.
-            r2t2_stt,  # Capa 1: ASR streaming append-only.
+            nemotron_stt,  # Capa 1: ASR streaming cache-aware (Nemotron 3.5).
             jev_router,  # Capa 2: System 1 (decisión/interrupción/filtro).
             system2_prompt_bridge,  # Capa 3a: arma el turno de LLM cuando Jev escala.
             system2_llm,  # Capa 3b: LLM cloud (Groq, OpenAI-compatible).

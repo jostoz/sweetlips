@@ -3,10 +3,10 @@
 Asistente de voz conversacional, corriendo local en Windows con GPU (RTX 4090):
 
 ```
-micrófono → FireRedVAD → Confucius4-R2T2 (ASR streaming, WSL2/vLLM)
+micrófono → FireRedVAD → Nemotron 3.5 ASR (streaming cache-aware, en proceso)
   → Jev (System 1: reglas + acciones locales)
   → Groq (System 2: LLM en la nube, openai/gpt-oss-120b)
-  → Kokoro-FastAPI (TTS, GPU CUDA) → altavoz/auriculares
+  → Windows TTS (SAPI5, voz "Dalia (Natural)") → altavoz/auriculares
 ```
 
 Rama: `pipecat-local-audio-edge`.
@@ -15,20 +15,23 @@ Rama: `pipecat-local-audio-edge`.
 
 - **VAD**: `services/firered_vad.py`, FireRedVAD streaming (confianza acústica,
   no solo energía). `stop_secs=0.7` para no cortar turnos a mitad de palabra.
-- **ASR**: `services/r2t2_stt.py`, cliente WebSocket a un servidor R2T2 que
-  corre en WSL2 (vLLM no tiene build nativo de Windows). Transcripción
-  incremental (append-only deltas).
+- **ASR**: `services/nemotron_stt.py`, Nemotron 3.5 ASR de NVIDIA (600M,
+  cache-aware FastConformer-RNNT) corriendo EN PROCESO vía 🤗 Transformers.
+  Transcripción incremental por deltas, ~2.9GB VRAM, español "tier 1"
+  (WER 4.11% en FLEURS-es, mejor que su propio inglés). Reemplazó a
+  Confucius4-R2T2 tras medirlo (ver "Migración ASR" más abajo).
 - **System 1** (`services/jev_system1.py`): reglas rápidas para acciones
   locales ("prende/apaga la luz", interrupciones) sin pasar por el LLM.
   Todo lo demás escala a System 2. Mutea el micrófono mientras el bot habla
   (+ 600ms de gracia) para evitar que se escuche a sí mismo.
 - **System 2** (`services/system2_llm.py` + `OpenAILLMService`): Groq
-  (`openai/gpt-oss-120b`), cloud, para no competir por VRAM con R2T2 (vLLM)
+  (`openai/gpt-oss-120b`), cloud, para no competir por VRAM con el ASR local
   en la misma GPU. Prompt corto/conversacional, `reasoning_effort="low"` +
   `max_completion_tokens=150` (ver "Notas" más abajo, por qué).
-- **TTS**: `services/kokoro_gpu_tts.py`, cliente HTTP a un servidor
-  Kokoro-FastAPI separado (PyTorch+CUDA real, no onnxruntime) corriendo en
-  `127.0.0.1:8880`. Voz `ef_dora` (español).
+- **TTS**: `services/windows_tts.py`, SAPI5 nativo de Windows con las voces
+  "Natural" desbloqueadas vía NaturalVoiceSAPIAdapter. Voz `Microsoft Dalia
+  (Natural)` (español, local, ~147ms). Cero GPU, cero red.
+  `services/kokoro_gpu_tts.py` queda como alternativa si se quiere volver.
 - **AEC**: activo por defecto (`services/aec_filter.py`, WebRTC AEC3).
   La señal far-end (referencia de lo que suena por el parlante) se
   captura con WASAPI loopback real (`pyaudiowpatch`) en vez de tapear
@@ -38,25 +41,29 @@ Rama: `pipecat-local-audio-edge`.
   hardware), permite usar parlantes en vez de auriculares sin que el
   sistema se re-transcriba a sí mismo.
 
-## Arrancar (4 procesos: 3 obligatorios + observabilidad opcional)
+## Arrancar (1 proceso obligatorio + observabilidad opcional)
 
-### 1. Servidor R2T2 (WSL2, puerto 8272)
+Ya no hace falta WSL2 ni un servidor de TTS aparte: el ASR (Nemotron) corre
+en proceso y el TTS usa SAPI5 nativo de Windows. Todo vive en `main.py`.
 
-```bash
-wsl -e bash -lc "export CPATH=/tmp/pydev/extracted/usr/include/python3.12:/tmp/pydev/extracted/usr/include:\$CPATH && \
-  source ~/r2t2-venv/bin/activate && cd ~/Confucius4-R2T2 && \
-  python -u ws_server.py --port 8272 \
-    --asr_model_path /mnt/c/Users/<user>/.../sweetlips/models/Confucius4-R2T2 \
-    --vad_model_path /mnt/c/Users/<user>/.../sweetlips/pretrained_models/FireRedVAD/Stream-VAD"
+### 1. El pipeline (Windows)
+
+```powershell
+$env:GROQ_API_KEY = "gsk_..."   # https://console.groq.com/keys
+pip install -r requirements.txt
+python main.py
 ```
 
-Listo cuando el log dice `model initialization complete`.
+La primera corrida descarga el checkpoint de Nemotron (~1.2GB) al cache de
+Hugging Face; las siguientes cargan en ~5s. Listo cuando imprime
+`[Listo] El agente de voz Edge está escuchando...`.
+Expone métricas Prometheus en `http://127.0.0.1:9091/metrics`.
 
-### 2. Servidor Kokoro-FastAPI (Windows, puerto 8880, GPU)
+### 2. (Opcional) Kokoro-FastAPI, solo si se vuelve a ese TTS
 
-Setup e instrucciones de arranque: ver comentarios en `requirements.txt`
-(sección "TTS: Kokoro-FastAPI"). Resumen del arranque, desde
-`vendor/Kokoro-FastAPI`:
+Setup e instrucciones: ver comentarios en `requirements.txt` (sección
+"TTS: Kokoro-FastAPI"). Los smoke tests de `tools/` también lo usan para
+sintetizar frases de prueba. Desde `vendor/Kokoro-FastAPI`:
 
 ```powershell
 $env:PHONEMIZER_ESPEAK_LIBRARY = 'C:\Program Files\eSpeak NG\libespeak-ng.dll'
@@ -66,21 +73,7 @@ $env:PYTHONPATH = '.'; $env:WEB_PLAYER_PATH = 'web'
 .venv/Scripts/uvicorn.exe api.src.main:app --host 0.0.0.0 --port 8880
 ```
 
-Listo cuando el log dice `Application startup complete` y
-`Model warmed up on cuda: kokoro_v1`.
-
-### 3. El pipeline (Windows)
-
-```powershell
-$env:GROQ_API_KEY = "gsk_..."   # https://console.groq.com/keys
-pip install -r requirements.txt
-python main.py
-```
-
-Listo cuando imprime `[Listo] El agente de voz Edge está escuchando...`.
-Expone métricas Prometheus en `http://127.0.0.1:9091/metrics`.
-
-### 4. Observabilidad (Prometheus + Grafana, opcional pero recomendado)
+### 3. Observabilidad (Prometheus + Grafana, opcional pero recomendado)
 
 ```powershell
 cd observability
@@ -116,6 +109,68 @@ etapa nueva: llamar `latency_probe.mark("nombre de la etapa")` en el
 processor correspondiente — no hace falta tocar Prometheus/Grafana, el
 label es dinámico.
 
+
+## Migración ASR: Confucius4-R2T2 → Nemotron 3.5 ASR
+
+**Motivo**: R2T2 truncaba la última palabra de una fracción grande de los
+turnos. Se investigó a fondo antes de migrar; vale la pena leer los
+resultados negativos para no repetir el trabajo.
+
+### Qué se descartó primero (el bug NO era config nuestra)
+
+- Timeout de `flush_final()` (0.6s → 1.2s): ayuda, no resuelve.
+- Silencio de cola extra antes del EOS: no resuelve.
+- Presupuesto de tokens del servidor (`first_max_new_tokens` 4 → 16 en el
+  `ws_server.py` de R2T2): **efecto cero**, revertido.
+- `stop_secs` del VAD (0.4 → 0.7s): mejora real y se mantiene, pero el
+  truncamiento seguía apareciendo igual.
+- **Clone 100% upstream**: se clonó el repo oficial de R2T2 limpio, con los
+  mismos pesos y el mismo FireRedVAD, y **reprodujo el bug idéntico**
+  (`"privada"` → `"priv"`, `"es"` y `"luz"` perdidas enteras). La única
+  diferencia con nuestra copia era `gpu_memory_utilization`, que no afecta
+  precisión. Conclusión: es comportamiento del modelo, no configuración.
+
+### Comparación medida (14 frases: 7 ES + 7 EN, misma síntesis y mismo audio)
+
+| Motor | Truncamientos | VRAM | Streaming real | Español |
+| --- | --- | --- | --- | --- |
+| Confucius4-R2T2 (1.7B, WSL2/vLLM) | **6/14** | ~15.6GB | sí (frágil) | secundario |
+| Parakeet TDT v3 (0.6B int8, CPU) | 0 | 0 | **no** (export offline) | ok |
+| Nemotron 3.5 ASR (0.6B, GPU fp32) | 0 | ~2.9GB | **sí** (cache-aware) | **tier 1** |
+| Nemotron 3.5 ASR (0.6B GGUF, CPU) | 1 pérdida total | 0 | sí | tier 1 |
+
+Se eligió **Nemotron GPU sin cuantizar**: la variante GGUF/CPU ahorra VRAM
+pero la cuantización introdujo una falla nueva (perdió una frase corta
+entera), y la prioridad del proyecto es precisión sobre latencia/recursos.
+
+Por qué R2T2 muestra buen WER en sus benchmarks y aun así falla acá: sus
+datasets (AMI, LibriSpeech, GigaSpeech...) son habla continua larga, donde
+casi nunca hay que decidir si comprometer la última palabra con poco
+contexto futuro. El caso conversacional real -- turnos cortos que terminan
+justo al final de la idea -- casi no se ejercita ahí. Es exactamente lo que
+señala el paper *RW-Voice-EQ Bench* de Hume AI (arXiv:2607.14846): *"real
+world ... conversational conditions expose failures that are not captured by
+established clean-speech benchmarks"*.
+
+### Bug de integración encontrado al portar (vale documentarlo)
+
+El bridge de streaming perdía la última palabra de CADA turno, pero solo con
+audio en tiempo real (con el audio precargado de golpe funcionaba). Tres
+hipótesis fallidas antes de dar con la causa: alineación de chunks STFT,
+`prompt_ids` faltante en `generate()`, padding del chunk final.
+
+**Causa real**: `loop.call_soon_threadsafe()` solo **agenda** el callback en
+el event loop, no lo ejecuta. `flush_final()` cerraba el turno (bloqueante) y
+drenaba la cola de texto **sin ceder nunca el control al event loop**, así
+que los callbacks con el último token seguían pendientes. Con audio
+precargado no se notaba porque los tokens llegaban mucho antes, entre los
+`await` del loop de entrada. Fix: `await asyncio.sleep(0.05)` después de
+cerrar el turno, y correr el cierre (que hace `thread.join()`) en un executor
+para no bloquear el loop.
+
+Verificación: `python tools/smoke_nemotron_multi.py` → 4/4 frases exactas en
+ES y EN, deltas confirmados incrementales durante el turno, y la reapertura
+de turno probada (segundo turno seguido con la misma instancia también OK).
 
 ## Notas / gotchas encontrados
 
