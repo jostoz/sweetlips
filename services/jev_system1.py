@@ -218,10 +218,15 @@ class JevSystem1Processor(FrameProcessor):
         -- cuenta cuántas veces el grace period evita un corte real
         (usuario retoma, "saves") vs cuántas veces solo agrega espera sin
         que hiciera falta (usuario no retoma, "wastes")."""
-        self._bot_text_norm = ""
-        """Última respuesta del bot, normalizada, para distinguir eco de
-        voz real durante el barge-in (la setea System2ResponseCollector)."""
-
+        self._recent_bot_texts: list[str] = []
+        """Ventana de las últimas respuestas del bot, normalizadas, para
+        distinguir eco de voz real (la llena System2ResponseCollector).
+        VENTANA, no solo la última: el eco que vuelve por el mic suele
+        mezclar varias respuestas seguidas (el parlante sigue sonando
+        mientras llega la siguiente), y comparar contra una sola daba
+        falsos negativos -> el bot se cortaba a sí mismo tomando su
+        propio eco como interrupción (bug real: "como que se corta el
+        speak")."""
 
     _BARGE_IN_MIN_CHARS = 12
     """Mínimo de texto acumulado mientras el bot habla para tratarlo como
@@ -230,23 +235,36 @@ class JevSystem1Processor(FrameProcessor):
     cortos, pero corto como para no obligar a la persona a decir una frase
     entera antes de que el bot la escuche."""
 
-    _BARGE_IN_ECHO_OVERLAP = 0.6
-    """Fracción de palabras de lo escuchado que aparecen en la respuesta
-    del bot para considerarlo eco. Por debajo de eso asumimos voz real."""
+    _BARGE_IN_ECHO_OVERLAP = 0.4
+    """Fracción de palabras de lo escuchado que aparecen en alguna
+    respuesta reciente del bot para considerarlo eco. Bajo a propósito
+    (0.4, no 0.6): el ASR mete errores al transcribir el eco
+    ("microsugestiones", "vaticiendo", "autor remedio") y palabras de
+    relleno, así que exigir mucho solapamiento deja pasar eco como si
+    fuera voz real. Falso negativo (tratar voz real como eco) solo
+    significa que hay que repetir; falso positivo (tratar eco como voz)
+    hace que el bot se corte solo y se responda a sí mismo en loop."""
+
+    _RECENT_BOT_TEXTS_MAX = 4
+    """Cuántas respuestas del bot se recuerdan para comparar contra el eco."""
 
     def set_bot_text(self, text: str) -> None:
         """La llama System2ResponseCollector con cada respuesta del LLM."""
-        self._bot_text_norm = _strip_accents(text.lower())
+        self._recent_bot_texts.append(_strip_accents(text.lower()))
+        del self._recent_bot_texts[: -self._RECENT_BOT_TEXTS_MAX]
 
     def _looks_like_bot_echo(self, heard: str) -> bool:
         """True si lo escuchado parece ser la propia voz del bot volviendo
         por el micrófono (el AEC no cancela del todo), no el usuario."""
-        if not self._bot_text_norm:
+        if not self._recent_bot_texts:
             return False
         words = [w for w in _strip_accents(heard.lower()).split() if len(w) > 2]
         if not words:
             return True  # solo ruido/fragmentos cortos: tratar como eco.
-        hits = sum(1 for w in words if w in self._bot_text_norm)
+        # Contra el POOL de respuestas recientes juntas, no una por una:
+        # un mismo eco suele arrastrar trozos de dos respuestas distintas.
+        pool = " ".join(self._recent_bot_texts)
+        hits = sum(1 for w in words if w in pool)
         return (hits / len(words)) >= self._BARGE_IN_ECHO_OVERLAP
     async def setup(self, setup) -> None:
         await super().setup(setup)
@@ -583,8 +601,21 @@ class JevSystem1Processor(FrameProcessor):
     async def _handle_turn_end(self, direction: FrameDirection) -> None:
         """El usuario dejó de hablar. Si quedó texto sin resolver, escalar
         a System 2 por defecto (no todo pasa por palabras clave)."""
-        if self.confirmed_text.strip():
-            await self._escalate(direction)
+        text = self.confirmed_text.strip()
+        if not text:
+            return
+        if self._looks_like_bot_echo(text):
+            # El muteo solo cubre mientras BotStartedSpeaking sigue activo;
+            # el eco que entra en la ventana de gracia (parlante todavía
+            # sonando tras BotStoppedSpeaking) llegaba acá SIN filtrar y se
+            # escalaba al LLM como si fuera el usuario. Bug real, en loop:
+            # el bot transcribía su propia respuesta, se la mandaba al LLM,
+            # el LLM la continuaba, y eso volvía a entrar por el mic.
+            print(f'[Jev] -> descartando eco del bot (no es el usuario): "{text}"', flush=True)
+            self.confirmed_text = ""
+            self._turn_started_at = None
+            return
+        await self._escalate(direction)
 
     async def _escalate(self, direction: FrameDirection) -> None:
         prompt = self.confirmed_text.strip()
