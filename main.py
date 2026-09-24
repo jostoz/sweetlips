@@ -163,8 +163,22 @@ async def main():
             # turno se pierde entero ("Parsing failed", visto en vivo en
             # esta sesión). qwen3.8-27b no es reasoning: no tiene ninguno
             # de los dos problemas.
+            #
+            # max_completion_tokens subido de 55 a 400: bug real visto en
+            # vivo -- 55 tokens alcanza apenas para una frase corta en
+            # español (más tokens/palabra que en inglés), y el modo
+            # [DETAILED_ANSWER] (slow path, ver jev_system1.py) pide
+            # explícitamente respuestas de varias frases -- el límite fijo
+            # las cortaba a mitad de explicación sin importar lo que diga
+            # el prompt (confirmado: "Depende mucho de a qué te
+            # refieras..." y "La diferencia fundamental entre filosofía e
+            # ideología..." truncadas). El prompt ya instruye "una frase
+            # corta" para el modo normal -- el modelo para solo (finish
+            # reason "stop") mucho antes de 400 en ese caso; el tope solo
+            # importa como techo de seguridad, no como control primario
+            # de longitud.
             model="qwen/qwen3.8-27b",
-            max_completion_tokens=55,
+            max_completion_tokens=400,
         ),
         api_key=os.environ["GROQ_API_KEY"],
         base_url="https://api.groq.com/openai/v1",
@@ -176,13 +190,10 @@ async def main():
 
     # WindowsTTSService (SAPI5 nativo, sin GPU -- ver services/windows_tts.py
     # para el detalle completo de por qué y cómo). Voz local "Dalia
-    # (Natural)" en español, aunque R2T2/LLM siguen en inglés -- decisión
-    # explícita del usuario: no vale la pena una voz en inglés no-HD
-    # (Jenny/Dalia son la línea "Natural" vieja, no "Natural HD" como
-    # Ava -- esa sí sonaba mejor pero solo existe como voz Online/cloud,
-    # ver services/windows_tts.py). Mezcla de idiomas (conversación en
-    # inglés, voz en español) es intencional, no un bug -- avisado al
-    # usuario que es inusual, decisión suya igual.
+    # (Natural)" en español -- ASR (Nemotron), LLM y TTS están los tres en
+    # español desde la migración a Nemotron (antes el ASR estaba forzado a
+    # inglés por la debilidad de R2T2 ahí; ya no aplica, Nemotron mide
+    # mejor en español que en inglés).
     tts = WindowsTTSService(voice="Microsoft Dalia (Natural)")
     loopback_capture = WasapiLoopbackCapture(far_end_buffer)
     await loopback_capture.start()  # referencia far-end real (WASAPI loopback) para el AEC.
