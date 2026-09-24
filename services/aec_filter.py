@@ -59,9 +59,21 @@ from pipecat.audio.utils import create_stream_resampler
 from pipecat.frames.frames import FilterControlFrame, FilterEnableFrame
 
 _AEC_SAMPLE_RATE = 16000
-# Tope del buffer far-end: ~5s de audio a 16kHz/16bit mono. Suficiente para
-# absorber jitter sin crecer indefinidamente si el filtro deja de consumir.
-_MAX_BUFFER_BYTES = _AEC_SAMPLE_RATE * 2 * 5
+# Tope del buffer far-end. El delay físico real esperado (loopback +
+# resampler + buffers de audio) es de 10-40ms -- 5s (valor anterior) era
+# un error real: permitía que el backlog creciera sin control y se
+# quedara ahí. Medido en vivo: far_buffer_pendiente se estabilizaba en
+# ~4.4s CONSTANTES durante toda la sesión (WasapiLoopbackCapture escribe
+# más rápido de lo que filter() lee), y el AEC terminaba comparando el
+# mic contra audio que sonó hace 4+ segundos -- desalineación masiva,
+# no los 10-40ms de jitter que se pensaba estar absorbiendo. Con eso
+# desalineado, restar la referencia no cancela: a veces amplifica
+# (visto en vivo: near_rms=302 -> cleaned_rms=590).
+#
+# 300ms es generoso para el jitter real del pipeline (loopback callback
+# a ráfagas + resampler), pero sigue siendo chico: si el backlog supera
+# esto, algo anda mal río arriba y hay que descartarlo, no arrastrarlo.
+_MAX_BUFFER_BYTES = _AEC_SAMPLE_RATE * 2 * 3 // 10  # 300ms
 
 
 class FarEndBuffer:
@@ -81,8 +93,17 @@ class FarEndBuffer:
 
     async def read(self, num_bytes: int) -> bytes:
         """Devuelve exactamente `num_bytes`; rellena con silencio si no hay
-        suficiente far-end en el buffer (nada sonando por el parlante)."""
+        suficiente far-end en el buffer (nada sonando por el parlante).
+
+        Si el backlog acumulado supera el delay físico esperado (ver
+        _MAX_BUFFER_BYTES), DESCARTA lo viejo antes de leer en vez de
+        devolver la muestra más antigua -- eso es exactamente lo que
+        causaba la desalineación de 4.4s: leer siempre desde el extremo
+        viejo de un buffer que crece más rápido de lo que se consume."""
         async with self._lock:
+            excess = len(self._buffer) - max(num_bytes, _MAX_BUFFER_BYTES)
+            if excess > 0:
+                del self._buffer[:excess]
             available = self._buffer[:num_bytes]
             del self._buffer[: len(available)]
         if len(available) < num_bytes:
