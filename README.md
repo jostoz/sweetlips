@@ -11,6 +11,31 @@ micrófono → FireRedVAD → Nemotron 3.5 ASR (streaming cache-aware, en proces
 
 Rama: `pipecat-local-audio-edge`.
 
+> ⚠️ **ESTADO ACTUAL (pausado para retomar): pipeline NO funcional, bug abierto sin resolver.**
+> Ver sección "Migración AEC" más abajo, capítulo final "Bug abierto: WASAPI+AEC3 no
+> transcribe nada". Proceso `main-assistant` detenido intencionalmente (no dejarlo
+> corriendo roto). Resumen para retomar rápido:
+> - MME (input de mic clásico) quedó **roto/silenciado** tras instalar Equalizer APO
+>   (medido: pico 35-44/32767 hablando fuerte, a cualquier tasa) -- no es reversible
+>   con más config, hay que usar WASAPI para el mic de ahora en más.
+> - WASAPI solo (sin ningún AEC) captura perfecto (pico 32502/32767) -- confirmado.
+> - WASAPI + nuestro AEC3 casero (`WebRTCAECFilter`) juntos: arranca sin errores,
+>   VAD detecta habla, PERO Nemotron **nunca transcribe nada** (0 texto en turnos
+>   completos con señal decente, `near_rms` 21-961, no es problema de volumen).
+>   Causa exacta sin aislar todavía.
+> - EchoNull (AEC por GPU, Equalizer APO): **descartado**, cancela la voz real casi
+>   al 100%, sin control de delay expuesto.
+> - Próximo paso de diagnóstico sugerido: aislar si el problema es el propio
+>   `WebRTCAECFilter.filter()` interactuando con los frames de
+>   `WASAPIResampledInputTransport` (tamaño/cadencia de chunk distinta a la que
+>   entregaba `transport.input()` nativo), agregando logging directo dentro de
+>   `NemotronASRService.process_audio_frame()` para confirmar si el audio
+>   post-filtro le está llegando en absoluto, con qué tamaño y contenido (RMS).
+> - Camino de escape más simple si hace falta pipeline funcional YA: WASAPI **sin**
+>   `audio_in_filter` (sacar el AEC3 temporalmente) -- confirmado que captura bien,
+>   aceptando cero cancelación de eco (usar auriculares) hasta resolver la
+>   interacción AEC3+WASAPI.
+
 ## Arquitectura
 
 - **VAD**: `services/firered_vad.py`, FireRedVAD streaming (confianza acústica,
@@ -172,7 +197,7 @@ Verificación: `python tools/smoke_nemotron_multi.py` → 4/4 frases exactas en
 ES y EN, deltas confirmados incrementales durante el turno, y la reapertura
 de turno probada (segundo turno seguido con la misma instancia también OK).
 
-## Migración AEC: WebRTC AEC3 casero → EchoNull (probado, REVERTIDO)
+## Migración AEC: WebRTC AEC3 casero → EchoNull → WASAPI+AEC3 (EN PAUSA, bug abierto)
 
 **Motivo**: el AEC casero (`services/aec_filter.py`, WebRTC AEC3 + loopback
 WASAPI manual) seguía amplificando en vez de cancelar en ~15-20% de los
@@ -257,7 +282,7 @@ veces.
 Verificado en vivo: panel de EchoNull pasó de "AUDIO ENGINE OFFLINE" a
 **"RTX AEC ACTIVE"** con el pipeline corriendo de verdad.
 
-### Resultado final: REVERTIDO, EchoNull cancelaba la voz real
+### Resultado: EchoNull cancelaba la voz real (no era tuning)
 
 Con el transport WASAPI andando y el panel confirmando "RTX AEC ACTIVE",
 la prueba en vivo dio transcripciones de basura ("Olana Spraylo ne podemos
@@ -283,13 +308,86 @@ entra en falsos positivos masivos, cancelando audio que no tiene relación
 real con el playback. Nuestro AEC3 evita esto porque el delay SÍ está
 calibrado con medición real (chirp, 172ms).
 
-**Revertido a WebRTC AEC3 casero** (commit siguiente a la migración).
-`services/aec_filter.py` sigue en uso; `services/wasapi_resampled_input.py`
-y `tools/wasapi_level_check.py` quedan en el repo sin usar, documentados
-como referencia si EchoNull algún día expone control de delay.
+### Capítulo 2: MME se rompió (bug distinto, no relacionado a EchoNull)
 
+Se revirtió el mic a MME + `WebRTCAECFilter` (el AEC3 casero que ya
+funcionaba antes de tocar nada de esto). Pero midiendo en vivo con
+`tools/wasapi_level_check.py` (captura cruda, sin pasar por el pipeline)
+se encontró que **MME quedó silenciado para este dispositivo tras instalar
+Equalizer APO**, a cualquier tasa:
 
-### Bug no relacionado encontrado en el camino (mic roto silenciosamente)
+| Backend | Tasa | Pico máx. hablando fuerte (de 32767) |
+| --- | --- | --- |
+| MME | 16kHz forzado | 35 |
+| MME | 44100Hz nativo | 44 |
+| **WASAPI** | 48kHz nativo | **32502** |
+
+Mismo hardware, mismo momento, mismo usuario. MME (el backend legacy que
+usaba el pipeline desde el principio) quedó roto por la instalación de
+Equalizer APO -- no es un problema de resampling (se probó a tasa nativa,
+mismo resultado), ni de volumen de Windows (confirmado al 100%/máximo).
+WASAPI es la única vía utilizable ahora en este equipo.
+
+### Capítulo 3 (ACTUAL, EN PAUSA): WASAPI + AEC3 combinados, Nemotron no transcribe nada
+
+Se combinó `WASAPIResampledInputTransport` (mic a WASAPI, resampleado a
+16kHz en proceso) con `audio_in_filter=WebRTCAECFilter` (nuestro AEC3,
+igual que antes) -- confirmado por lectura del código fuente de pipecat
+(`pipecat/transports/base_input.py`) que el filtro SÍ se aplica igual con
+este transport custom (usa `push_audio_frame()`, la misma cola genérica
+de `BaseInputTransport` donde se invoca `audio_in_filter.filter()`).
+
+El pipeline arranca sin errores, el AEC inicializa bien
+(`[AEC] EchoCanceller iniciado`), el diagnóstico periódico confirma señal
+de nivel normal llegando (`near_rms` visto entre 21 y 961 en distintos
+intentos, nada anormalmente bajo), y VAD detecta correctamente
+`User started/stopped speaking`. **Pero Nemotron nunca produce ni un solo
+carácter de texto** -- cero líneas `[Jev] escuchado` en turnos completos,
+confirmado en al menos 3 intentos separados con señal de nivel razonable.
+El watchdog de turno atascado (15s) eventualmente descarta el turno con
+texto vacío (`"..."`).
+
+**Causa exacta sin aislar todavía.** Hipótesis de trabajo, sin confirmar:
+el tamaño/cadencia de chunk que entrega `WASAPIResampledInputTransport`
+(resampleado desde 48kHz nativo a 16kHz vía `create_stream_resampler()`,
+asíncrono, despachado desde el callback de PyAudio con
+`asyncio.run_coroutine_threadsafe`) podría diferir de lo que
+`NemotronASRService` espera internamente (tamaño de ventana STFT, cadencia
+de deltas) de forma que produce texto vacío sin lanzar ninguna excepción
+visible. También sin descartar: alguna excepción silenciosa en el propio
+callback (`run_coroutine_threadsafe` no propaga excepciones si nadie lee
+el resultado del `Future` que devuelve).
+
+**Además se encontró y arregló un bug de timeout relacionado**:
+`setup_timeout_secs` (ya subido antes de 20s a 60s) volvió a ser
+insuficiente -- una carga de Nemotron tardó más de 60s (confirmado en
+logs: `[Nemotron] Modelo cargado` llegó 26s DESPUÉS de que el timeout ya
+había tirado el pipeline) tras varios reinicios seguidos en la misma
+sesión. VRAM y RAM verificadas sanas en ese momento (`nvidia-smi`:
+1.5/24.5GB; RAM: 18/31.7GB libres) -- no es contención de memoria,
+probablemente variabilidad de I/O de disco/SO. Subido a 150s.
+
+**Próximos pasos de diagnóstico sugeridos** (no ejecutados aún):
+1. Instrumentar `NemotronASRService.process_audio_frame()` (o el punto
+   equivalente donde recibe `InputAudioRawFrame`) con un log directo del
+   tamaño en bytes y RMS de cada frame que le llega, para confirmar si el
+   audio post-AEC3 le está llegando en absoluto, y con qué forma.
+2. Probar WASAPI + AEC3 pero con `WASAPIResampledInputTransport` usando
+   EXACTAMENTE el mismo tamaño de chunk (20ms) que `transport.input()`
+   nativo usaba con MME, para descartar diferencias de cadencia.
+3. Si el punto 1 confirma que SÍ llega audio con contenido real (RMS
+   razonable) pero Nemotron igual no transcribe: aislar
+   `NemotronASRService` en un smoke test directo
+   (`tools/smoke_nemotron_multi.py`, ya existe) alimentándolo con audio
+   capturado real de esta sesión (grabado a disco) para descartar que el
+   bug esté en Nemotron mismo vs. en el camino de frames hasta llegar ahí.
+
+**Camino de escape más simple si hace falta un pipeline funcional ya**:
+WASAPI sin `audio_in_filter` (sacar el AEC3 temporalmente) -- confirmado
+que captura bien (pico 32502), aceptando cero cancelación de eco (usar
+auriculares) hasta resolver esta interacción.
+
+### Capítulo 4: bug no relacionado encontrado en el camino (mic roto silenciosamente)
 
 Instalar Equalizer APO agregó endpoints de audio virtuales al sistema, lo
 que corrió el ORDEN DE ENUMERACIÓN de PortAudio -- `input_device_index=1`

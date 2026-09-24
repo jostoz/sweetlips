@@ -1,23 +1,23 @@
-"""SIN USAR -- probado en vivo y DESCARTADO, queda como referencia (mismo
-criterio que services/aec_filter.py, que este archivo justamente vino a
-reemplazar y terminó no reemplazando). Ver README, sección "Migración
-AEC" para el detalle completo.
+"""Input transport de micrófono: abre WASAPI a su tasa NATIVA (48kHz) y
+resamplea a la tasa que pide el pipeline (16kHz) en el propio proceso.
 
-Resuelve un problema real (WASAPI necesita abrirse a su tasa nativa,
-48kHz, y resamplear a 16kHz en proceso para que Equalizer APO/EchoNull
-puedan interceptar el mic) -- la clase en sí funciona bien, verificado en
-logs ("[WASAPIResampledInput] Mic abierto @ 48000Hz..." sin errores).
+Escrito originalmente para que EchoNull (AEC por GPU vía Equalizer APO)
+pudiera interceptar el mic -- ESA parte se descartó (EchoNull cancelaba
+la voz real del usuario, ver README "Migración AEC"), pero esta clase
+se sigue usando igual, por una razón distinta encontrada después:
+**instalar Equalizer APO rompió el backend MME** para este dispositivo
+(medido con captura cruda, tools/wasapi_level_check.py: pico 35-44/32767
+hablando fuerte, a cualquier tasa -- 16kHz forzado o nativa 44100Hz,
+mismo resultado). WASAPI captura bien (pico 32502/32767, mismo hardware,
+mismo momento) -- es la única vía de entrada utilizable ahora, aunque no
+se use ningún AEC de terceros.
 
-Se descartó por lo que había DETRÁS: EchoNull, medido en vivo con
-captura cruda (tools/wasapi_level_check.py), cancelaba la voz REAL del
-usuario casi al 100% (pico 32/32767 con su AEC activo vs. 32502/32767
-con el AEC apagado) -- no tiene ningún control de delay/alineación
-expuesto, a diferencia de nuestro WebRTCAECFilter (aec_filter.py),
-calibrado con chirp real a 172ms. Si algún día EchoNull expone ese
-control, esta clase sigue siendo el punto de entrada correcto para
-reactivarlo (cambiar `input_device_index` a host API "WASAPI" en
-main.py y usar `WASAPIResampledInputTransport` en vez de
-`transport.input()` en la lista del pipeline).
+`audio_in_filter` (nuestro WebRTCAECFilter, ver aec_filter.py) SÍ se
+sigue aplicando normal con este transport: usa `push_audio_frame()`,
+que alimenta la misma cola genérica de `BaseInputTransport` donde
+pipecat aplica el filtro (confirmado leyendo
+pipecat/transports/base_input.py) -- no hace falta reimplementar nada
+de eso acá.
 """
 
 from __future__ import annotations

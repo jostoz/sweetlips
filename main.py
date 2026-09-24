@@ -67,6 +67,7 @@ from services.windows_tts import WindowsTTSService
 from services import latency_probe
 from services.nemotron_stt import NemotronASRService
 from services.aec_filter import FarEndBuffer, WasapiLoopbackCapture, WebRTCAECFilter
+from services.wasapi_resampled_input import WASAPIResampledInputTransport
 from services.system2_llm import (
     DEFAULT_SYSTEM_PROMPT,
     System2PromptBridge,
@@ -93,23 +94,30 @@ async def main():
             # real, USB aparte). Bug real hoy: con índice fijo (=1), instalar
             # Equalizer APO agregó endpoints virtuales al sistema y corrió el
             # orden de enumeración de PortAudio -- el pipeline quedó
-            # escuchando por la webcam sin ningún error visible.
+            # escuchando por la webcam sin ningún error visible. El orden
+            # volvió a cambiar OTRA VEZ más tarde en la misma sesión (1 y 2
+            # se intercambiaron de nuevo) -- por eso siempre por nombre.
             #
-            # MME (no WASAPI): WASAPI no acepta 16kHz directo del
-            # dispositivo (nativo 48kHz) -- "[Errno -9997] Invalid sample
-            # rate", falla real en vivo. MME sí resamplea automáticamente
-            # vía PortAudio. Se probó WASAPI + resampling propio
-            # (services/wasapi_resampled_input.py, ver README "Migración
-            # AEC") para que EchoNull (AEC por GPU vía Equalizer APO)
-            # pudiera interceptar el mic -- REVERTIDO: EchoNull no expone
-            # ningún control de delay/alineación (a diferencia de nuestro
-            # AEC3, calibrado con chirp real a 172ms) y, medido en vivo con
-            # captura cruda (tools/wasapi_level_check.py), cancelaba la VOZ
-            # REAL del usuario casi al 100% (pico 32/32767 con AEC on vs.
-            # 32502/32767 con AEC off) -- falso positivo masivo, no un tema
-            # de tuning de "reference strength". Mucho peor que el 15-20%
-            # de picos mal cancelados del AEC3 casero.
-            input_device_index=_find_mic_device_index("Realtek USB Audio", "MME"),
+            # WASAPI (no MME): bug real medido en vivo hoy -- tras instalar
+            # Equalizer APO, el backend MME quedó SILENCIADO para este
+            # dispositivo (confirmado con captura cruda sin pipeline,
+            # tools/wasapi_level_check.py: pico 35-44/32767 hablando fuerte,
+            # A CUALQUIER TASA -- 16kHz forzado o 44100Hz nativo, mismo
+            # resultado -- descartando que sea un problema de resampling).
+            # WASAPI SÍ captura bien (pico 32502/32767, mismo hardware,
+            # mismo momento). Se prescinde de EchoNull en sí (ver README
+            # "Migración AEC": cancelaba la voz real, sin control de delay
+            # expuesto) pero SE MANTIENE el transport WASAPI propio
+            # (services/wasapi_resampled_input.py) porque es lo único que
+            # captura bien tras la instalación de Equalizer APO -- WASAPI
+            # nativo es 48kHz, se resamplea a 16kHz en proceso ahí mismo
+            # (pedirle 16kHz directo a WASAPI tira "[Errno -9997] Invalid
+            # sample rate"). El audio_in_filter (AEC3, ver abajo) SÍ se
+            # sigue aplicando con este transport -- usa
+            # `push_audio_frame()`, que alimenta la misma cola genérica de
+            # `BaseInputTransport` donde pipecat aplica el filtro
+            # (confirmado leyendo pipecat/transports/base_input.py).
+            input_device_index=_find_mic_device_index("Realtek USB Audio", "WASAPI"),
             audio_in_sample_rate=16000,
             # AEC (WebRTC AEC3) con referencia real por WASAPI loopback (ver
             # services/aec_filter.py). stream_delay_ms=172: medido en vivo
@@ -222,10 +230,19 @@ async def main():
     loopback_capture = WasapiLoopbackCapture(far_end_buffer)
     await loopback_capture.start()  # referencia far-end real (WASAPI loopback) para el AEC.
 
+    # WASAPIResampledInputTransport en vez de transport.input(): ver
+    # comentario en input_device_index más arriba -- MME quedó roto tras
+    # instalar Equalizer APO, WASAPI es lo único que captura bien.
+    # audio_in_filter (AEC3) se sigue aplicando normal (usa
+    # push_audio_frame(), misma cola genérica de BaseInputTransport).
+    mic_input = WASAPIResampledInputTransport(
+        transport._pyaudio, transport._params, native_rate=48000
+    )
+
     # 3. Pipeline.
     pipeline = Pipeline(
         [
-            transport.input(),  # Micro local (16 kHz) + AEC (WebRTC AEC3, referencia por loopback WASAPI).
+            mic_input,  # Micro local (WASAPI 48kHz -> 16kHz) + AEC (WebRTC AEC3, referencia por loopback WASAPI).
             vad,  # Capa 0: VAD acústico -> VADUserStarted/StoppedSpeakingFrame.
             nemotron_stt,  # Capa 1: ASR streaming cache-aware (Nemotron 3.5).
             jev_router,  # Capa 2: System 1 (decisión/interrupción/filtro).
@@ -237,15 +254,19 @@ async def main():
         ]
     )
 
-    # setup_timeout_secs subido de 20s (default de pipecat) a 60s: bug
-    # real visto en vivo -- carga de Nemotron normalmente 5-7s, pero una
-    # corrida tardó más (GPU/disco) y superó los 20s, tirando abajo TODO
-    # el pipeline con "timeout setting the pipeline up", sin reintento
-    # automático (el proceso queda "vivo" pero sin pipeline corriendo,
-    # hay que reiniciar a mano). 60s da margen real sin ocultar un cuelgue
-    # genuino (si tarda más que eso, sí hay algo mal).
+    # setup_timeout_secs subido de 20s (default pipecat) a 60s, y hoy a
+    # 150s: segundo bug real visto en vivo -- tras muchos reinicios
+    # seguidos del pipeline en la misma sesión (7+), una corrida de carga
+    # de Nemotron que normalmente tarda 5-7s tardó más de 60s (confirmado
+    # con el log: "[Nemotron] Modelo cargado" llegó 26s DESPUÉS de que el
+    # timeout ya había tirado abajo el pipeline). VRAM y RAM verificadas
+    # sanas en ese momento (nvidia-smi: 1.5/24.5GB; RAM: 18/31.7GB libres)
+    # -- no es contención de memoria, probablemente variabilidad de I/O de
+    # disco/SO tras una sesión larga con muchos reinicios de modelos
+    # pesados. 150s da margen real sin ocultar un cuelgue genuino (si
+    # tarda más que eso, sí hay algo mal).
     task = PipelineTask(
-        pipeline, enable_rtvi=False, idle_timeout_secs=None, setup_timeout_secs=60.0
+        pipeline, enable_rtvi=False, idle_timeout_secs=None, setup_timeout_secs=150.0
     )
     runner = PipelineRunner()
 
