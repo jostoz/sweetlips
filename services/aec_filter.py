@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import asyncio
 import queue
+import time
 
 import numpy as np
 from loguru import logger
@@ -60,20 +61,22 @@ from pipecat.frames.frames import FilterControlFrame, FilterEnableFrame
 
 _AEC_SAMPLE_RATE = 16000
 # Tope del buffer far-end. El delay físico real esperado (loopback +
-# resampler + buffers de audio) es de 10-40ms -- 5s (valor anterior) era
+# resampler + buffers de audio) es de 10-40ms -- 5s (valor original) era
 # un error real: permitía que el backlog creciera sin control y se
 # quedara ahí. Medido en vivo: far_buffer_pendiente se estabilizaba en
 # ~4.4s CONSTANTES durante toda la sesión (WasapiLoopbackCapture escribe
 # más rápido de lo que filter() lee), y el AEC terminaba comparando el
-# mic contra audio que sonó hace 4+ segundos -- desalineación masiva,
-# no los 10-40ms de jitter que se pensaba estar absorbiendo. Con eso
-# desalineado, restar la referencia no cancela: a veces amplifica
-# (visto en vivo: near_rms=302 -> cleaned_rms=590).
+# mic contra audio que sonó hace 4+ segundos -- desalineación masiva.
 #
-# 300ms es generoso para el jitter real del pipeline (loopback callback
-# a ráfagas + resampler), pero sigue siendo chico: si el backlog supera
-# esto, algo anda mal río arriba y hay que descartarlo, no arrastrarlo.
-_MAX_BUFFER_BYTES = _AEC_SAMPLE_RATE * 2 * 3 // 10  # 300ms
+# Bajarlo a 300ms (primer intento) resultó DEMASIADO agresivo: el
+# loopback no entrega en flujo continuo estable, sino con huecos reales
+# entre escrituras (instrumentado en _drain(), ver "loopback write" en
+# los logs) -- con 300ms de margen el buffer quedaba casi vacío durante
+# esos huecos, y el AEC terminaba comparando contra silencio (ERLE
+# negativo: near_rms=2 -> cleaned_rms=12). 800ms es un punto medio
+# mientras se mide la cadencia real (ver logs "[AEC diag] loopback
+# write") para dimensionar esto con datos, no adivinando de nuevo.
+_MAX_BUFFER_BYTES = _AEC_SAMPLE_RATE * 2 * 8 // 10  # 800ms
 
 
 class FarEndBuffer:
@@ -208,6 +211,23 @@ class WasapiLoopbackCapture:
                 pcm16k = await self._resampler.resample(
                     mono, self._device_rate, _AEC_SAMPLE_RATE
                 )
+                # Diagnóstico: mismo error que el buffer 5s original --
+                # no volver a adivinar un tope sin medir la cadencia real
+                # de escritura. Loguea cada burst con cuánto pasó desde
+                # el anterior y cuántos bytes trajo -- si el loopback
+                # entrega en ráfagas espaciadas (no un flujo continuo
+                # ~1x tiempo real), el tope del buffer tiene que
+                # dimensionarse para el HUECO entre ráfagas, no para el
+                # "jitter" que se asumía al principio.
+                now = time.monotonic()
+                last = getattr(self, "_last_write_time", None)
+                gap_ms = (now - last) * 1000 if last is not None else 0.0
+                self._last_write_time = now
+                if gap_ms > 100:
+                    logger.debug(
+                        f"[AEC diag] loopback write: {len(pcm16k)}B tras "
+                        f"{gap_ms:.0f}ms de hueco desde la escritura anterior"
+                    )
                 await self._far_end_buffer.write(pcm16k)
         except asyncio.CancelledError:
             pass
