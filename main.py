@@ -82,7 +82,17 @@ async def main():
             # del pipeline de TTS) tenía un delay far-end impredecible y
             # degradaba el audio; el loopback captura lo que realmente
             # suena por el hardware, mismo dominio de tiempo que el mic.
-            audio_in_filter=WebRTCAECFilter(far_end_buffer),
+            #
+            # stream_delay_ms medido con tools/calibrate_aec_delay.py
+            # (chirp conocido, correlación cruzada contra el mic real --
+            # mismo principio que un micrófono de calibración acústica
+            # tipo Audyssey): 171.6/173.3/172.4ms en 3 corridas, SNR de
+            # correlación hasta 270000x (medición muy confiable). Dejarlo
+            # en 0 (estimador interno de AEC3 adivinando) coincidía con
+            # los picos de ERLE negativo medidos hoy -- el delay real es
+            # ~4x más grande que los "10-40ms" que se asumía antes sin
+            # medir. Si cambia el hardware de audio, recalibrar.
+            audio_in_filter=WebRTCAECFilter(far_end_buffer, stream_delay_ms=172),
         )
     )
 
