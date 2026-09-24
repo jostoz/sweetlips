@@ -206,11 +206,7 @@ class WasapiLoopbackCapture:
             self._pa.terminate()
             self._pa = None
 
-    def _downmix(self, data: bytes) -> bytes:
-        if self._device_channels == 1:
-            return data
-        arr = np.frombuffer(data, dtype=np.int16).reshape(-1, self._device_channels)
-        return arr.mean(axis=1).astype(np.int16).tobytes()
+
 
 
 class WebRTCAECFilter(BaseAudioFilter):
@@ -226,6 +222,18 @@ class WebRTCAECFilter(BaseAudioFilter):
         self._aec: EchoCanceller | None = None
         self._sample_rate = 0
         self._enabled = True
+        self._far_was_silent = True
+        """Diagnóstico en vivo (ver README, sección AEC): cancela bien en
+        volumen bajo/moderado (hasta ~90% de reducción de RMS) pero en
+        picos fuertes deja de cancelar o directamente AMPLIFICA
+        (near_rms=302 -> cleaned_rms=590) -- firma clásica de un filtro
+        adaptativo con el delay desalineado, sumando en vez de restar.
+        El WASAPI loopback callback solo dispara cuando hay audio activo
+        (ver WasapiLoopbackCapture): cada transición silencio->sonido es
+        un punto de discontinuidad donde el estado adaptativo de AEC3,
+        convergido para el turno anterior, puede quedar desalineado para
+        el nuevo. Resetear ahí fuerza una reconvergencia limpia en vez de
+        arrastrar un estado potencialmente stale/incorrecto."""
 
     async def start(self, sample_rate: int) -> None:
         if sample_rate != _AEC_SAMPLE_RATE:
@@ -242,9 +250,22 @@ class WebRTCAECFilter(BaseAudioFilter):
     async def stop(self) -> None:
         self._aec = None
 
+    def reset(self) -> None:
+        """Fuerza al filtro adaptativo a reconverger desde cero. Llamado
+        automáticamente en cada transición silencio->sonido del far-end
+        (ver filter()); expuesto también para que main.py lo dispare
+        explícitamente en BotStartedSpeakingFrame como red adicional."""
+        if self._aec is not None:
+            self._aec.reset()
+
     async def process_frame(self, frame: FilterControlFrame) -> None:
         if isinstance(frame, FilterEnableFrame):
             self._enabled = frame.enable
+
+    _DIAG_LOG_EVERY = 50
+    """Cada cuántos chunks (con far-end activo) loguear métricas de
+    diagnóstico -- a 16kHz/20ms por chunk, ~1s. Sin este throttle,
+    loguear cada chunk inunda el log (50/s)."""
 
     async def filter(self, audio: bytes) -> bytes:
         if not self._enabled or self._aec is None:
@@ -258,13 +279,42 @@ class WebRTCAECFilter(BaseAudioFilter):
             # cancelar. Procesar igual degradaba el audio limpio (medido:
             # -25% RMS en silencio de far-end), así que devolvemos el audio
             # del mic sin tocar.
+            self._far_was_silent = True
             return audio
+
+        if self._far_was_silent:
+            # Transición silencio -> sonido: ver docstring de __init__.
+            # Reconvergencia limpia en vez de arrastrar el estado
+            # adaptativo (posiblemente desalineado) del turno anterior.
+            self.reset()
+            self._far_was_silent = False
 
         near_arr = np.frombuffer(audio, dtype=np.int16)
 
         try:
             cleaned = self._aec.process(near_arr, far_arr)
-            return np.asarray(cleaned, dtype=np.int16).tobytes()
+            cleaned_arr = np.asarray(cleaned, dtype=np.int16)
+
+            # Diagnóstico: ¿cuánto está cancelando realmente? ERLE
+            # (Echo Return Loss Enhancement) aproximado: cuánto bajó el
+            # RMS del near-end después de restar el eco estimado. Un AEC
+            # que cancela bien debería mostrar ERLE de varios dB cuando
+            # hay far-end fuerte; ERLE ~0 con far-end fuerte = está
+            # dejando pasar el eco casi intacto.
+            self._diag_counter = getattr(self, "_diag_counter", 0) + 1
+            if self._diag_counter % self._DIAG_LOG_EVERY == 0:
+                near_rms = float(np.sqrt(np.mean(near_arr.astype(np.float64) ** 2)) + 1e-6)
+                cleaned_rms = float(np.sqrt(np.mean(cleaned_arr.astype(np.float64) ** 2)) + 1e-6)
+                far_rms = float(np.sqrt(np.mean(far_arr.astype(np.float64) ** 2)) + 1e-6)
+                erle_db = 20 * np.log10(near_rms / cleaned_rms) if cleaned_rms > 0 else 0.0
+                pending = await self._far_end_buffer.pending_bytes()
+                logger.debug(
+                    f"[AEC diag] near_rms={near_rms:.0f} cleaned_rms={cleaned_rms:.0f} "
+                    f"far_rms={far_rms:.0f} erle={erle_db:+.1f}dB "
+                    f"far_buffer_pendiente={pending}B ({pending / (_AEC_SAMPLE_RATE * 2) * 1000:.0f}ms)"
+                )
+
+            return cleaned_arr.tobytes()
         except Exception as e:
             logger.error(f"[AEC] Error procesando audio: {e}")
             return audio
