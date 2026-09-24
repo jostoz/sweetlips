@@ -66,6 +66,22 @@ def _strip_accents(text: str) -> str:
     )
 
 
+_SPANISH_STOPWORDS = frozenset(
+    """
+    una uno unos unas los las del que con por para como pero muy más mas
+    ese esa eso este esta esto sus tus mis sin sobre entre desde hasta
+    donde cuando porque también tambien todo toda todos todas cada cual
+    quien tiene tener hacer hace ser esta estan estar puede pueden podria
+    podrías bien pues asi así vos usted ustedes nos les lo la el un una
+    """.split()
+)
+"""Palabras de altísima frecuencia en español: aparecen en casi cualquier
+respuesta del bot por puro vocabulario común, sin que el usuario esté
+citando nada. Excluirlas del chequeo de eco es lo que evita los falsos
+positivos reales vistos en vivo (ver _looks_like_bot_echo)."""
+
+
+
 def _has_interrupt_word(normalized_text: str, language: str) -> bool:
     words = _INTERRUPT_WORDS_BY_LANG.get(language, _INTERRUPT_WORDS_BY_LANG["English"])
     return any(
@@ -235,15 +251,25 @@ class JevSystem1Processor(FrameProcessor):
     cortos, pero corto como para no obligar a la persona a decir una frase
     entera antes de que el bot la escuche."""
 
-    _BARGE_IN_ECHO_OVERLAP = 0.4
-    """Fracción de palabras de lo escuchado que aparecen en alguna
-    respuesta reciente del bot para considerarlo eco. Bajo a propósito
-    (0.4, no 0.6): el ASR mete errores al transcribir el eco
-    ("microsugestiones", "vaticiendo", "autor remedio") y palabras de
-    relleno, así que exigir mucho solapamiento deja pasar eco como si
-    fuera voz real. Falso negativo (tratar voz real como eco) solo
-    significa que hay que repetir; falso positivo (tratar eco como voz)
-    hace que el bot se corte solo y se responda a sí mismo en loop."""
+    _BARGE_IN_ECHO_OVERLAP = 0.5
+    """Fracción de las PALABRAS DE CONTENIDO (excluyendo stopwords, ver
+    _SPANISH_STOPWORDS) de lo escuchado que aparecen en alguna respuesta
+    reciente del bot para considerarlo eco.
+
+    Dos enfoques probados y descartados antes de este:
+    - Bag-of-words sin filtrar stopwords: "una"/"historia" aparecen en
+      cualquier respuesta larga del bot por puro vocabulario común, sin
+      que el usuario esté citando nada -- 3 turnos reales descartados en
+      vivo ("Platica una historia de leyendas").
+    - Secuencia contigua más larga (n-grama): más específico en teoría,
+      pero el ASR mete errores al TRANSCRIBIR EL ECO ("medida" + "Depende"
+      pegados en un token, "variando" -> "vaticiendo") que parten la
+      secuencia en dos y hunden el score -- más frágil, no menos, contra
+      un AEC que ya de por sí no cancela perfecto.
+
+    Bag-of-words + stopwords es el punto medio: ignora vocabulario
+    trivial (fuente real de los falsos positivos) sin exigir que el ASR
+    transcriba el eco palabra por palabra en el mismo orden exacto."""
 
     _RECENT_BOT_TEXTS_MAX = 4
     """Cuántas respuestas del bot se recuerdan para comparar contra el eco."""
@@ -255,17 +281,29 @@ class JevSystem1Processor(FrameProcessor):
 
     def _looks_like_bot_echo(self, heard: str) -> bool:
         """True si lo escuchado parece ser la propia voz del bot volviendo
-        por el micrófono (el AEC no cancela del todo), no el usuario."""
+        por el micrófono (el AEC no cancela del todo), no el usuario.
+
+        Parche sobre un AEC (services/aec_filter.py) que NO cancela del
+        todo -- la solución de raíz es que el AEC cancele bien, no afinar
+        esta heurística de texto para siempre (ver discusión en README,
+        sección AEC). Mientras tanto, esto es la mejor aproximación
+        encontrada tras dos intentos peores en vivo."""
         if not self._recent_bot_texts:
             return False
-        words = [w for w in _strip_accents(heard.lower()).split() if len(w) > 2]
-        if not words:
-            return True  # solo ruido/fragmentos cortos: tratar como eco.
-        # Contra el POOL de respuestas recientes juntas, no una por una:
-        # un mismo eco suele arrastrar trozos de dos respuestas distintas.
+        heard_words = [
+            w for w in _strip_accents(heard.lower()).split()
+            if len(w) > 2 and w not in _SPANISH_STOPWORDS
+        ]
+        if not heard_words:
+            return True  # solo stopwords/ruido: tratar como eco.
         pool = " ".join(self._recent_bot_texts)
-        hits = sum(1 for w in words if w in pool)
-        return (hits / len(words)) >= self._BARGE_IN_ECHO_OVERLAP
+        hits = sum(1 for w in heard_words if w in pool)
+        # Piso absoluto de 2 coincidencias: con frases muy cortas (2-3
+        # palabras de contenido) una sola palabra común de casualidad
+        # ("historia") ya cruza el 50% de fracción -- caso real visto en
+        # vivo ("historia de leyenda" descartado por match con 1 palabra).
+        return hits >= 2 and (hits / len(heard_words)) >= self._BARGE_IN_ECHO_OVERLAP
+
     async def setup(self, setup) -> None:
         await super().setup(setup)
         if self._smart_turn is not None:
