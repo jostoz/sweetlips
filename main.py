@@ -20,6 +20,37 @@ Nemotron corre en-proceso vía Transformers y elimina esa dependencia.
 import asyncio
 import os
 
+import pyaudio
+
+
+def _find_mic_device_index(name_substring: str, host_api_name: str = "MME") -> int:
+    """Busca el índice del micrófono por NOMBRE + host API, no por índice
+    fijo. Bug real encontrado en vivo hoy: `input_device_index=1` apuntaba
+    a "Micrófono (Realtek USB Audio)" MME durante toda la sesión, pero
+    tras instalar Equalizer APO (agrega endpoints virtuales al sistema) el
+    orden de enumeración de PortAudio cambió y el índice 1 pasó a ser
+    "Micrófono (Steren COM-126)" -- el mic de la webcam, el INCORRECTO
+    (ya descartado hace tiempo). El pipeline quedó escuchando por la
+    webcam sin ningún error visible -- silenciosamente mal, la peor clase
+    de bug. Buscar por nombre es más lento (unas pocas ms al arrancar)
+    pero sobrevive a que el índice vuelva a correrse."""
+    p = pyaudio.PyAudio()
+    try:
+        for i in range(p.get_device_count()):
+            info = p.get_device_info_by_index(i)
+            if info["maxInputChannels"] <= 0:
+                continue
+            host_api = p.get_host_api_info_by_index(info["hostApi"])["name"]
+            if name_substring in info["name"] and host_api_name in host_api:
+                return i
+    finally:
+        p.terminate()
+    raise RuntimeError(
+        f"No se encontró un micrófono con nombre que contenga {name_substring!r} "
+        f"en host API {host_api_name!r}. Dispositivos disponibles cambiaron -- "
+        f"revisar con pyaudio.PyAudio().get_device_info_by_index(i) para cada i."
+    )
+
 
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 from pipecat.audio.vad.vad_analyzer import VADParams
@@ -30,7 +61,6 @@ from pipecat.processors.audio.vad_processor import VADProcessor
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
 
-from services.aec_filter import FarEndBuffer, WasapiLoopbackCapture, WebRTCAECFilter
 from services.firered_vad import FireRedVADAnalyzer
 from services.jev_system1 import JevSystem1Processor
 from services.windows_tts import WindowsTTSService
@@ -48,51 +78,36 @@ async def main():
     latency_probe.start_metrics_server(port=9091)
 
     # 1. Audio local (micro y altavoz físicos del equipo).
-    far_end_buffer = FarEndBuffer()  # señal de referencia para el AEC.
     transport = LocalAudioTransport(
         params=LocalAudioTransportParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
-            # Fijado explícito (no "default de Windows"): el equipo tiene
-            # DOS micrófonos -- "Steren COM-126" (integrado a la webcam,
+            # Fijado por NOMBRE, no por índice numérico (ver
+            # _find_mic_device_index más arriba): el equipo tiene DOS
+            # micrófonos -- "Steren COM-126" (integrado a la webcam,
             # confirmado por su entrada duplicada como Camera en el
             # registro de dispositivos) y "Realtek USB Audio" (el externo
-            # real, USB aparte). El comentario viejo acá decía que se
-            # usaba Steren porque en su momento Realtek aparecía
-            # desconectado en Device Manager -- eso cambió, Realtek ya
-            # funciona y es el mic correcto a usar, pero depender del
-            # "default de Windows" es frágil (cambia solo si se
-            # conecta/desconecta algo, sin aviso). Índice 17 = "Micrófono
-            # (Realtek USB Audio)" vía host API WASAPI (no MME/DirectSound/
-            # WDM-KS, que pyaudio también expone como entradas separadas
-            # para el mismo dispositivo físico). Probado índice 17
-            # (WASAPI) primero por consistencia con el loopback del AEC,
-            # pero WASAPI exclusive/shared no acepta 16kHz directo del
+            # real, USB aparte). Bug real hoy: con índice fijo (=1), instalar
+            # Equalizer APO agregó endpoints virtuales al sistema y corrió el
+            # orden de enumeración de PortAudio -- el pipeline quedó
+            # escuchando por la webcam sin ningún error visible. MME (no
+            # WASAPI): WASAPI exclusive/shared no acepta 16kHz directo del
             # dispositivo (nativo 48kHz) -- "[Errno -9997] Invalid sample
-            # rate", falla real en vivo. MME (índice 1) sí resamplea
-            # automáticamente vía portaudio, que es lo que ya funcionaba
-            # con el "default de Windows" anterior.
-            # Verificar con
-            # `python -c "import pyaudio; p=pyaudio.PyAudio(); [print(i, p.get_device_info_by_index(i)['name'], p.get_host_api_info_by_index(p.get_device_info_by_index(i)['hostApi'])['name']) for i in range(p.get_device_count())]"`
-            # si cambia el hardware.
-            input_device_index=1,
+            # rate", falla real en vivo. MME sí resamplea automáticamente
+            # vía portaudio.
+            input_device_index=_find_mic_device_index("Realtek USB Audio", "MME"),
             audio_in_sample_rate=16000,
-            # AEC (WebRTC AEC3) con referencia real por WASAPI loopback (ver
-            # services/aec_filter.py) -- el primer intento (tapear frames
-            # del pipeline de TTS) tenía un delay far-end impredecible y
-            # degradaba el audio; el loopback captura lo que realmente
-            # suena por el hardware, mismo dominio de tiempo que el mic.
-            #
-            # stream_delay_ms medido con tools/calibrate_aec_delay.py
-            # (chirp conocido, correlación cruzada contra el mic real --
-            # mismo principio que un micrófono de calibración acústica
-            # tipo Audyssey): 171.6/173.3/172.4ms en 3 corridas, SNR de
-            # correlación hasta 270000x (medición muy confiable). Dejarlo
-            # en 0 (estimador interno de AEC3 adivinando) coincidía con
-            # los picos de ERLE negativo medidos hoy -- el delay real es
-            # ~4x más grande que los "10-40ms" que se asumía antes sin
-            # medir. Si cambia el hardware de audio, recalibrar.
-            audio_in_filter=WebRTCAECFilter(far_end_buffer, stream_delay_ms=172),
+            # AEC casero (WebRTC AEC3 + loopback WASAPI, services/aec_filter.py)
+            # SACADO: reemplazado por EchoNull (NVIDIA NvAFX, GPU) instalado a
+            # nivel de sistema operativo vía Equalizer APO -- limpia el audio
+            # ANTES de que llegue a este proceso, así que audio_in_filter ya no
+            # hace falta acá. Motivo del cambio: nuestro AEC3 casero (a pesar
+            # de 4 rondas de fixes reales hoy -- buffer desalineado 4.4s,
+            # underrun con el fix, delay sin calibrar) seguía con ~15-20% de
+            # picos donde amplificaba en vez de cancelar. services/aec_filter.py
+            # y tools/calibrate_aec_delay.py quedan en el repo como referencia
+            # y opción de rollback si EchoNull da problemas (proyecto de baja
+            # adopción, 0 stars en GitHub -- riesgo aceptado explícitamente).
         )
     )
 
@@ -195,13 +210,11 @@ async def main():
     # inglés por la debilidad de R2T2 ahí; ya no aplica, Nemotron mide
     # mejor en español que en inglés).
     tts = WindowsTTSService(voice="Microsoft Dalia (Natural)")
-    loopback_capture = WasapiLoopbackCapture(far_end_buffer)
-    await loopback_capture.start()  # referencia far-end real (WASAPI loopback) para el AEC.
 
     # 3. Pipeline.
     pipeline = Pipeline(
         [
-            transport.input(),  # Micro local (16 kHz) + AEC.
+            transport.input(),  # Micro local (16 kHz) -- limpio de eco por EchoNull a nivel de SO.
             vad,  # Capa 0: VAD acústico -> VADUserStarted/StoppedSpeakingFrame.
             nemotron_stt,  # Capa 1: ASR streaming cache-aware (Nemotron 3.5).
             jev_router,  # Capa 2: System 1 (decisión/interrupción/filtro).
@@ -226,10 +239,7 @@ async def main():
     runner = PipelineRunner()
 
     print("\n[Listo] El agente de voz Edge está escuchando... (Ctrl+C para salir)\n")
-    try:
-        await runner.run(task)
-    finally:
-        await loopback_capture.stop()
+    await runner.run(task)
 
 
 if __name__ == "__main__":
