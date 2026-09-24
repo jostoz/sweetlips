@@ -66,7 +66,6 @@ from services.jev_system1 import JevSystem1Processor
 from services.windows_tts import WindowsTTSService
 from services import latency_probe
 from services.nemotron_stt import NemotronASRService
-from services.aec_filter import FarEndBuffer, WasapiLoopbackCapture, WebRTCAECFilter
 from services.wasapi_resampled_input import WASAPIResampledInputTransport
 from services.system2_llm import (
     DEFAULT_SYSTEM_PROMPT,
@@ -78,8 +77,6 @@ from services.system2_llm import (
 
 async def main():
     latency_probe.start_metrics_server(port=9091)
-
-    far_end_buffer = FarEndBuffer()  # señal de referencia (loopback) para el AEC.
 
     # 1. Audio local (micro y altavoz físicos del equipo).
     transport = LocalAudioTransport(
@@ -119,11 +116,21 @@ async def main():
             # (confirmado leyendo pipecat/transports/base_input.py).
             input_device_index=_find_mic_device_index("Realtek USB Audio", "WASAPI"),
             audio_in_sample_rate=16000,
-            # AEC (WebRTC AEC3) con referencia real por WASAPI loopback (ver
-            # services/aec_filter.py). stream_delay_ms=172: medido en vivo
-            # con tools/calibrate_aec_delay.py (chirp + cross-correlación,
-            # SNR hasta 270,000x) -- no es un valor adivinado.
-            audio_in_filter=WebRTCAECFilter(far_end_buffer, stream_delay_ms=172),
+            # AEC (WebRTC AEC3): DESACTIVADO por ahora (audio_in_filter=None).
+            # Bug real hoy sin resolver: con stream_delay_ms=172 (calibrado
+            # con MME) Nemotron recibía audio con RMS 3-4 (sobre-cancelado).
+            # Con stream_delay_ms=0 (estimador interno de AEC3) el primer
+            # turno funcionó bien, pero el segundo generó transcripción de
+            # basura CONTINUA con el usuario en silencio real -- indica
+            # inestabilidad del estimador, probablemente relacionada con
+            # los warnings recurrentes "[AEC] Cola de loopback atrasada"
+            # (el resampler/event loop de WasapiLoopbackCapture no sigue
+            # el ritmo real del audio far-end, ver services/aec_filter.py).
+            # Decisión: priorizar pipeline ESTABLE ahora (usuario con
+            # auriculares, sin AEC) sobre seguir peleando esto en la misma
+            # sesión. Ver README "Migración AEC" Capítulo 3 para retomar:
+            # el jitter del loopback capture es el próximo sospechoso a
+            # instrumentar antes de volver a intentar con AEC3 activo.
         )
     )
 
@@ -227,14 +234,12 @@ async def main():
     # mejor en español que en inglés).
     tts = WindowsTTSService(voice="Microsoft Dalia (Natural)")
 
-    loopback_capture = WasapiLoopbackCapture(far_end_buffer)
-    await loopback_capture.start()  # referencia far-end real (WASAPI loopback) para el AEC.
-
     # WASAPIResampledInputTransport en vez de transport.input(): ver
     # comentario en input_device_index más arriba -- MME quedó roto tras
     # instalar Equalizer APO, WASAPI es lo único que captura bien.
-    # audio_in_filter (AEC3) se sigue aplicando normal (usa
-    # push_audio_frame(), misma cola genérica de BaseInputTransport).
+    # loopback_capture (WasapiLoopbackCapture) NO se arranca -- solo hacía
+    # falta como referencia far-end para audio_in_filter, que está
+    # desactivado por ahora (ver comentario arriba).
     mic_input = WASAPIResampledInputTransport(
         transport._pyaudio, transport._params, native_rate=48000
     )
@@ -242,7 +247,7 @@ async def main():
     # 3. Pipeline.
     pipeline = Pipeline(
         [
-            mic_input,  # Micro local (WASAPI 48kHz -> 16kHz) + AEC (WebRTC AEC3, referencia por loopback WASAPI).
+            mic_input,  # Micro local (WASAPI 48kHz -> 16kHz). AEC desactivado, usar auriculares.
             vad,  # Capa 0: VAD acústico -> VADUserStarted/StoppedSpeakingFrame.
             nemotron_stt,  # Capa 1: ASR streaming cache-aware (Nemotron 3.5).
             jev_router,  # Capa 2: System 1 (decisión/interrupción/filtro).

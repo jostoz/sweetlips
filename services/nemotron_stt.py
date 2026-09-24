@@ -296,7 +296,21 @@ class NemotronASRService(STTService):
         self._open_turn()
         return "".join(final_chunks)
 
+    _diag_counter = 0
+
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame | None, None]:
+        # DIAG temporal (ver README "Migración AEC" Capítulo 3, bug abierto):
+        # confirmar si el audio post-AEC3/WASAPI le llega a Nemotron en
+        # absoluto, con qué tamaño y RMS. Cada 25 llamadas (~cada 0.5-1s de
+        # audio real) para no inundar el log.
+        self._diag_counter += 1
+        if self._diag_counter % 25 == 0:
+            arr = np.frombuffer(audio, dtype=np.int16) if audio else np.array([], dtype=np.int16)
+            rms = float(np.sqrt(np.mean(arr.astype(np.float64) ** 2))) if len(arr) else 0.0
+            logger.info(
+                f"[Nemotron DIAG] run_stt recibió {len(audio)}B, rms={rms:.0f}, "
+                f"buffer_acumulado={len(self._audio_buffer)}B"
+            )
         self._audio_buffer.extend(audio)
 
         if self._audio_queue is None:

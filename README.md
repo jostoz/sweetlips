@@ -11,30 +11,36 @@ micrófono → FireRedVAD → Nemotron 3.5 ASR (streaming cache-aware, en proces
 
 Rama: `pipecat-local-audio-edge`.
 
-> ⚠️ **ESTADO ACTUAL (pausado para retomar): pipeline NO funcional, bug abierto sin resolver.**
-> Ver sección "Migración AEC" más abajo, capítulo final "Bug abierto: WASAPI+AEC3 no
-> transcribe nada". Proceso `main-assistant` detenido intencionalmente (no dejarlo
-> corriendo roto). Resumen para retomar rápido:
+> ✅ **ESTADO ACTUAL: funcional y estable SIN AEC, parado a distancia del parlante.**
+> Ver sección "Migración AEC" más abajo, Capítulo 3, para el detalle completo y
+> qué falta para volver a usar el parlante de cerca. Resumen para retomar rápido:
 > - MME (input de mic clásico) quedó **roto/silenciado** tras instalar Equalizer APO
 >   (medido: pico 35-44/32767 hablando fuerte, a cualquier tasa) -- no es reversible
->   con más config, hay que usar WASAPI para el mic de ahora en más.
-> - WASAPI solo (sin ningún AEC) captura perfecto (pico 32502/32767) -- confirmado.
-> - WASAPI + nuestro AEC3 casero (`WebRTCAECFilter`) juntos: arranca sin errores,
->   VAD detecta habla, PERO Nemotron **nunca transcribe nada** (0 texto en turnos
->   completos con señal decente, `near_rms` 21-961, no es problema de volumen).
->   Causa exacta sin aislar todavía.
+>   con más config, el mic usa **WASAPI** de ahora en más
+>   (`services/wasapi_resampled_input.py`).
 > - EchoNull (AEC por GPU, Equalizer APO): **descartado**, cancela la voz real casi
 >   al 100%, sin control de delay expuesto.
-> - Próximo paso de diagnóstico sugerido: aislar si el problema es el propio
->   `WebRTCAECFilter.filter()` interactuando con los frames de
->   `WASAPIResampledInputTransport` (tamaño/cadencia de chunk distinta a la que
->   entregaba `transport.input()` nativo), agregando logging directo dentro de
->   `NemotronASRService.process_audio_frame()` para confirmar si el audio
->   post-filtro le está llegando en absoluto, con qué tamaño y contenido (RMS).
-> - Camino de escape más simple si hace falta pipeline funcional YA: WASAPI **sin**
->   `audio_in_filter` (sacar el AEC3 temporalmente) -- confirmado que captura bien,
->   aceptando cero cancelación de eco (usar auriculares) hasta resolver la
->   interacción AEC3+WASAPI.
+> - AEC3 casero (`WebRTCAECFilter`) + WASAPI: **desactivado por ahora**
+>   (`audio_in_filter=None` en `main.py`) -- con `stream_delay_ms` fijo (172ms,
+>   calibrado para MME) sobre-cancelaba (RMS 3-4, Nemotron no transcribía nada);
+>   con `stream_delay_ms=0` (estimador automático) funcionó un turno y después
+>   generó transcripción de basura continua en silencio real -- inestabilidad
+>   sin resolver, sospecha: jitter del loopback capture (ver logs
+>   `[AEC] Cola de loopback atrasada`).
+> - **Verificado en vivo, sesión completa (36 turnos, conversación larga y
+>   natural)**: funciona bien SIN auriculares, parado a **más de 1 metro** del
+>   parlante de la compu -- menos acoplamiento acústico directo (factor real
+>   medible, no solo software). Sin AEC el mic sí capta algo de eco del propio
+>   bot (confirmado: transcripción palabra por palabra sincronizada con "Bot
+>   started/stopped speaking"), pero el filtro de eco por SOFTWARE de Jev
+>   (`_looks_like_bot_echo`, compara texto contra lo último que dijo el bot)
+>   lo descarta correctamente -- nunca escaló eco como si fuera el usuario.
+>   Usuario confirma: "por primera vez lo sentí fluido, aun con algo de ruido
+>   lejano de cortas pausas".
+> - Sin AEC: cuanto más cerca del parlante, más eco real llega al mic y más
+>   presión sobre el filtro de software (probado funcionando >1m; no probado
+>   de cerca). Requiere distancia del parlante O auriculares hasta retomar
+>   el AEC de verdad.
 
 ## Arquitectura
 
@@ -57,14 +63,15 @@ Rama: `pipecat-local-audio-edge`.
   "Natural" desbloqueadas vía NaturalVoiceSAPIAdapter. Voz `Microsoft Dalia
   (Natural)` (español, local, ~147ms). Cero GPU, cero red.
   `services/kokoro_gpu_tts.py` queda como alternativa si se quiere volver.
-- **AEC**: activo por defecto (`services/aec_filter.py`, WebRTC AEC3).
-  La señal far-end (referencia de lo que suena por el parlante) se
-  captura con WASAPI loopback real (`pyaudiowpatch`) en vez de tapear
-  frames del pipeline de TTS -- el primer intento con eso tenía un delay
-  far-end impredecible (colas internas de TTS) y degradaba el audio
-  limpio. Con loopback el delay es chico y estable (buffers de
-  hardware), permite usar parlantes en vez de auriculares sin que el
-  sistema se re-transcriba a sí mismo.
+- **AEC**: DESACTIVADO actualmente (`services/aec_filter.py`, WebRTC AEC3,
+  `audio_in_filter=None` en `main.py` -- ver banner de estado arriba y
+  "Migración AEC" Capítulo 3 más abajo para el detalle completo). El código
+  sigue en el repo, listo para reactivar (`audio_in_filter=WebRTCAECFilter(...)`)
+  cuando se resuelva la inestabilidad con el nuevo transport WASAPI. Mientras
+  tanto: mic vía `services/wasapi_resampled_input.py` (WASAPI, no MME -- ver
+  banner), sin cancelación de eco acústico -- el filtro de eco por texto en
+  `services/jev_system1.py` (`_looks_like_bot_echo`) es la única defensa
+  activa contra que el bot se escuche a sí mismo.
 
 ## Arrancar (1 proceso obligatorio + observabilidad opcional)
 
@@ -197,7 +204,7 @@ Verificación: `python tools/smoke_nemotron_multi.py` → 4/4 frases exactas en
 ES y EN, deltas confirmados incrementales durante el turno, y la reapertura
 de turno probada (segundo turno seguido con la misma instancia también OK).
 
-## Migración AEC: WebRTC AEC3 casero → EchoNull → WASAPI+AEC3 (EN PAUSA, bug abierto)
+## Migración AEC: WebRTC AEC3 casero → EchoNull → WASAPI+AEC3 → AEC desactivado (funcional)
 
 **Motivo**: el AEC casero (`services/aec_filter.py`, WebRTC AEC3 + loopback
 WASAPI manual) seguía amplificando en vez de cancelar en ~15-20% de los
@@ -328,7 +335,7 @@ Equalizer APO -- no es un problema de resampling (se probó a tasa nativa,
 mismo resultado), ni de volumen de Windows (confirmado al 100%/máximo).
 WASAPI es la única vía utilizable ahora en este equipo.
 
-### Capítulo 3 (ACTUAL, EN PAUSA): WASAPI + AEC3 combinados, Nemotron no transcribe nada
+### Capítulo 3: WASAPI + AEC3 combinados, Nemotron no transcribe nada (bug encontrado)
 
 Se combinó `WASAPIResampledInputTransport` (mic a WASAPI, resampleado a
 16kHz en proceso) con `audio_in_filter=WebRTCAECFilter` (nuestro AEC3,
@@ -347,47 +354,76 @@ confirmado en al menos 3 intentos separados con señal de nivel razonable.
 El watchdog de turno atascado (15s) eventualmente descarta el turno con
 texto vacío (`"..."`).
 
-**Causa exacta sin aislar todavía.** Hipótesis de trabajo, sin confirmar:
-el tamaño/cadencia de chunk que entrega `WASAPIResampledInputTransport`
-(resampleado desde 48kHz nativo a 16kHz vía `create_stream_resampler()`,
-asíncrono, despachado desde el callback de PyAudio con
-`asyncio.run_coroutine_threadsafe`) podría diferir de lo que
-`NemotronASRService` espera internamente (tamaño de ventana STFT, cadencia
-de deltas) de forma que produce texto vacío sin lanzar ninguna excepción
-visible. También sin descartar: alguna excepción silenciosa en el propio
-callback (`run_coroutine_threadsafe` no propaga excepciones si nadie lee
-el resultado del `Future` que devuelve).
+**Diagnóstico real (no hipótesis)**: se instrumentó
+`NemotronASRService.run_stt()` con un log directo de tamaño+RMS de cada
+chunk recibido (`_diag_counter`, cada 25 llamadas). Confirmó que Nemotron
+SÍ recibía audio, pero con **RMS 3-4** (de 32767) -- coincidía exactamente
+con `cleaned_rms` del AEC en los mismos instantes. **El AEC3 estaba
+sobre-cancelando la señal real**, no un problema de que el audio no
+llegara.
 
-**Además se encontró y arregló un bug de timeout relacionado**:
-`setup_timeout_secs` (ya subido antes de 20s a 60s) volvió a ser
-insuficiente -- una carga de Nemotron tardó más de 60s (confirmado en
-logs: `[Nemotron] Modelo cargado` llegó 26s DESPUÉS de que el timeout ya
-había tirado el pipeline) tras varios reinicios seguidos en la misma
-sesión. VRAM y RAM verificadas sanas en ese momento (`nvidia-smi`:
-1.5/24.5GB; RAM: 18/31.7GB libres) -- no es contención de memoria,
-probablemente variabilidad de I/O de disco/SO. Subido a 150s.
+Causa: `stream_delay_ms=172` (calibrado con `tools/calibrate_aec_delay.py`
+cuando el mic era MME) quedó **obsoleto** -- el camino cambió a WASAPI +
+resample async propio (`services/wasapi_resampled_input.py`), que agrega
+latencia de cola/scheduling nueva del lado del mic que no existía con MME.
+Con el delay desalineado, AEC3 resta la señal equivocada del audio real
+en vez del eco -- exactamente el comportamiento documentado ya en el
+propio código (`WebRTCAECFilter.__init__`, ver "firma clásica de un
+filtro adaptativo con el delay desalineado").
 
-**Próximos pasos de diagnóstico sugeridos** (no ejecutados aún):
-1. Instrumentar `NemotronASRService.process_audio_frame()` (o el punto
-   equivalente donde recibe `InputAudioRawFrame`) con un log directo del
-   tamaño en bytes y RMS de cada frame que le llega, para confirmar si el
-   audio post-AEC3 le está llegando en absoluto, y con qué forma.
-2. Probar WASAPI + AEC3 pero con `WASAPIResampledInputTransport` usando
-   EXACTAMENTE el mismo tamaño de chunk (20ms) que `transport.input()`
-   nativo usaba con MME, para descartar diferencias de cadencia.
-3. Si el punto 1 confirma que SÍ llega audio con contenido real (RMS
-   razonable) pero Nemotron igual no transcribe: aislar
-   `NemotronASRService` en un smoke test directo
-   (`tools/smoke_nemotron_multi.py`, ya existe) alimentándolo con audio
-   capturado real de esta sesión (grabado a disco) para descartar que el
-   bug esté en Nemotron mismo vs. en el camino de frames hasta llegar ahí.
+### Capítulo 4: `stream_delay_ms=0` (estimador automático) funciona un turno, después se desestabiliza
 
-**Camino de escape más simple si hace falta un pipeline funcional ya**:
-WASAPI sin `audio_in_filter` (sacar el AEC3 temporalmente) -- confirmado
-que captura bien (pico 32502), aceptando cero cancelación de eco (usar
-auriculares) hasta resolver esta interacción.
+Cambiar a `stream_delay_ms=0` (estimador interno de AEC3, en vez del
+valor fijo obsoleto) **resolvió la sobre-cancelación**: verificado en vivo,
+un turno completo funcionó de punta a punta (transcripción limpia,
+escalada a LLM, respuesta de Groq, TTS, audio real).
 
-### Capítulo 4: bug no relacionado encontrado en el camino (mic roto silenciosamente)
+Pero el turno siguiente generó **transcripción de basura CONTINUA con el
+usuario en silencio real confirmado** ("Saluda usar tumo hablando
+naturalmente bien aquí siendo los fríos sistemas..." -- sin sentido,
+acumulando sin parar, nunca cierra el turno). Esto no es un problema de
+volumen -- es inestabilidad activa: el sistema genera contenido de la
+nada. Sospecha, sin confirmar: los warnings recurrentes
+`[AEC] Cola de loopback atrasada` (el resampler/event loop de
+`WasapiLoopbackCapture` no sigue el ritmo real del audio far-end) podrían
+estar desestabilizando el estimador de delay automático, que necesita una
+señal de referencia consistente para converger.
+
+### Capítulo 5 (ACTUAL): AEC desactivado, verificado funcional y estable en vivo
+
+Dada la inestabilidad del Capítulo 4, se desactivó el AEC3 por completo
+(`audio_in_filter=None`). Verificado en vivo en una sesión larga (36
+turnos, conversación natural sostenida sobre temas variados) parado a
+**más de 1 metro** de distancia del parlante de la PC (sin auriculares):
+funciona bien, sin cuelgues ni transcripción de basura. Usuario: *"por
+primera vez lo sentí fluido, aun con algo de ruido lejano de cortas
+pausas"*.
+
+El mic SÍ capta algo del audio del propio bot mientras habla (confirmado:
+transcripción palabra por palabra en `[Jev] escuchado` sincronizada
+exactamente con `Bot started/stopped speaking`), pero el filtro de eco
+por **software** de Jev (`_looks_like_bot_echo` en
+`services/jev_system1.py`, compara el texto escuchado contra lo último
+que dijo el bot) lo descarta correctamente en todos los casos observados
+-- nunca se escaló eco al LLM como si fuera el usuario. La distancia al
+parlante (menos acoplamiento acústico directo) es un factor real que
+contribuye; no se probó qué tan bien aguanta hablando pegado al parlante.
+
+**Estado para retomar el AEC** (no urgente, el pipeline funciona sin él si
+se mantiene distancia del parlante o se usan auriculares):
+1. Instrumentar `WasapiLoopbackCapture._drain()` para entender por qué el
+   resampler/event loop no sigue el ritmo del far-end (causa raíz
+   sospechada de la inestabilidad del Capítulo 4).
+2. Una vez estable el loopback, recalibrar `stream_delay_ms` con un
+   chirp que replique el camino COMPLETO real (WASAPI nativo + resample
+   async), no solo MME directo como hace hoy
+   `tools/calibrate_aec_delay.py`.
+3. Alternativa a considerar: mover el resample del mic fuera del hilo
+   async (ej. resamplear síncrono en el propio callback de PyAudio antes
+   de despachar) para eliminar la fuente de jitter en vez de perseguirla.
+
+
+### Capítulo 6: bug no relacionado encontrado en el camino (mic roto silenciosamente)
 
 Instalar Equalizer APO agregó endpoints de audio virtuales al sistema, lo
 que corrió el ORDEN DE ENUMERACIÓN de PortAudio -- `input_device_index=1`
