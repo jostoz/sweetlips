@@ -189,6 +189,21 @@ class WasapiLoopbackCapture:
                     # Sentinel de stop(): salir limpio (ver comentario ahí
                     # sobre por qué no alcanza con cancel() solo).
                     return
+                # Auditoría (misma línea que el bug del FarEndBuffer, ver
+                # README/commit "causa raiz real"): esta cola cruda entre
+                # el callback de PortAudio y el resampler nunca tuvo tope
+                # ni instrumentación -- si _drain() se atrasa (resampler,
+                # congestión del event loop), acumula acá ANTES de llegar
+                # al FarEndBuffer (que ya recorta agresivo). Impacto ya
+                # mitigado río abajo, pero se loguea si crece para no
+                # repetir el mismo error de "asumir sin medir".
+                backlog = self._queue.qsize()
+                if backlog > 10:
+                    logger.warning(
+                        f"[AEC] Cola de loopback atrasada: {backlog} chunks pendientes "
+                        f"(~{backlog * self._chunk_ms}ms) -- el resampler o el event loop "
+                        f"no están siguiendo el ritmo del audio real."
+                    )
                 mono = self._downmix(data)
                 pcm16k = await self._resampler.resample(
                     mono, self._device_rate, _AEC_SAMPLE_RATE
