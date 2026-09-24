@@ -202,7 +202,16 @@ async def main():
         ]
     )
 
-    task = PipelineTask(pipeline, enable_rtvi=False, idle_timeout_secs=None)
+    # setup_timeout_secs subido de 20s (default de pipecat) a 60s: bug
+    # real visto en vivo -- carga de Nemotron normalmente 5-7s, pero una
+    # corrida tardó más (GPU/disco) y superó los 20s, tirando abajo TODO
+    # el pipeline con "timeout setting the pipeline up", sin reintento
+    # automático (el proceso queda "vivo" pero sin pipeline corriendo,
+    # hay que reiniciar a mano). 60s da margen real sin ocultar un cuelgue
+    # genuino (si tarda más que eso, sí hay algo mal).
+    task = PipelineTask(
+        pipeline, enable_rtvi=False, idle_timeout_secs=None, setup_timeout_secs=60.0
+    )
     runner = PipelineRunner()
 
     print("\n[Listo] El agente de voz Edge está escuchando... (Ctrl+C para salir)\n")
