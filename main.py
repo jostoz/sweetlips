@@ -66,6 +66,7 @@ from services.jev_system1 import JevSystem1Processor
 from services.windows_tts import WindowsTTSService
 from services import latency_probe
 from services.nemotron_stt import NemotronASRService
+from services.wasapi_resampled_input import WASAPIResampledInputTransport
 from services.system2_llm import (
     DEFAULT_SYSTEM_PROMPT,
     System2PromptBridge,
@@ -90,12 +91,18 @@ async def main():
             # real, USB aparte). Bug real hoy: con índice fijo (=1), instalar
             # Equalizer APO agregó endpoints virtuales al sistema y corrió el
             # orden de enumeración de PortAudio -- el pipeline quedó
-            # escuchando por la webcam sin ningún error visible. MME (no
-            # WASAPI): WASAPI exclusive/shared no acepta 16kHz directo del
-            # dispositivo (nativo 48kHz) -- "[Errno -9997] Invalid sample
-            # rate", falla real en vivo. MME sí resamplea automáticamente
-            # vía portaudio.
-            input_device_index=_find_mic_device_index("Realtek USB Audio", "MME"),
+            # escuchando por la webcam sin ningún error visible.
+            #
+            # WASAPI (no MME): para que EchoNull (AEC por GPU, instalado hoy
+            # vía Equalizer APO) pueda interceptar el mic, hace falta un
+            # stream WASAPI real -- Equalizer APO solo vive en ese pipeline
+            # de audio compartido, MME no pasa por ahí. WASAPI nativo es
+            # 48kHz (no 16kHz que pide el resto del pipeline); se abre a la
+            # tasa nativa y se resamplea en services/wasapi_resampled_input.py
+            # (WASAPIResampledInputTransport, usado más abajo en vez de
+            # transport.input()) -- pedirle 16kHz directo a WASAPI tira
+            # "[Errno -9997] Invalid sample rate" (confirmado en vivo).
+            input_device_index=_find_mic_device_index("Realtek USB Audio", "WASAPI"),
             audio_in_sample_rate=16000,
             # AEC casero (WebRTC AEC3 + loopback WASAPI, services/aec_filter.py)
             # SACADO: reemplazado por EchoNull (NVIDIA NvAFX, GPU) instalado a
@@ -211,10 +218,21 @@ async def main():
     # mejor en español que en inglés).
     tts = WindowsTTSService(voice="Microsoft Dalia (Natural)")
 
+    # WASAPIResampledInputTransport en vez de transport.input(): abre el
+    # mic a su tasa nativa WASAPI (48kHz) y resamplea a 16kHz en proceso
+    # (ver services/wasapi_resampled_input.py) -- necesario para que
+    # EchoNull (Equalizer APO) pueda interceptar la sesión de captura.
+    # Comparte el mismo pyaudio.PyAudio() que el transport (para no abrir
+    # el subsistema de audio dos veces); transport.output() se sigue
+    # usando normal para el parlante.
+    mic_input = WASAPIResampledInputTransport(
+        transport._pyaudio, transport._params, native_rate=48000
+    )
+
     # 3. Pipeline.
     pipeline = Pipeline(
         [
-            transport.input(),  # Micro local (16 kHz) -- limpio de eco por EchoNull a nivel de SO.
+            mic_input,  # Micro local (WASAPI 48kHz -> 16kHz) -- limpio de eco por EchoNull a nivel de SO.
             vad,  # Capa 0: VAD acústico -> VADUserStarted/StoppedSpeakingFrame.
             nemotron_stt,  # Capa 1: ASR streaming cache-aware (Nemotron 3.5).
             jev_router,  # Capa 2: System 1 (decisión/interrupción/filtro).

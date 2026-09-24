@@ -172,6 +172,115 @@ Verificación: `python tools/smoke_nemotron_multi.py` → 4/4 frases exactas en
 ES y EN, deltas confirmados incrementales durante el turno, y la reapertura
 de turno probada (segundo turno seguido con la misma instancia también OK).
 
+## Migración AEC: WebRTC AEC3 casero → EchoNull (NVIDIA NvAFX, GPU)
+
+**Motivo**: el AEC casero (`services/aec_filter.py`, WebRTC AEC3 + loopback
+WASAPI manual) seguía amplificando en vez de cancelar en ~15-20% de los
+picos de volumen, incluso después de 3 rondas de fixes reales (buffer
+desalineado 4.4s, underrun al bajar el tope, delay sin calibrar). Se
+evaluaron las alternativas y se decidió migrar a una solución de sistema
+operativo en vez de seguir iterando en la nuestra.
+
+### Por qué no había alternativa madura dentro de pipecat
+
+Los filtros de audio que trae pipecat (`KoalaFilter`, `RNNoiseFilter`,
+`KrispVivaFilter`, `AICFilter`) son todos de **supresión de ruido**, no de
+**cancelación de eco** -- no toman una señal de referencia far-end, así que
+no pueden hacer lo que hace un AEC. WebRTC AEC3 (via `pywebrtc-audio`) era
+la única opción de cancelación de eco real disponible, y expone una API
+mínima (sample_rate, num_channels, stream_delay_ms, process, reset) sin
+ninguna visibilidad de diagnóstico -- todo el trabajo de hoy fue
+reverse-engineering su comportamiento a ciegas.
+
+### La alternativa elegida: EchoNull
+
+[EchoNull](https://github.com/Skyline-23/EchoNull) (MIT, 0 stars/forks --
+riesgo de baja adopción aceptado explícitamente) integra el modelo de AEC
+de NVIDIA (NvAFX, red neuronal, corre en GPU) como plugin VST dentro de
+[Equalizer APO](https://sourceforge.net/projects/equalizerapo/) (framework
+de procesamiento de audio de Windows, maduro, ampliamente usado). Corre
+**a nivel de sistema operativo**, en `audiodg.exe` -- limpia el audio del
+micrófono ANTES de que llegue a cualquier proceso, incluido el nuestro.
+
+### Instalación (pasos manuales, no automatizables del todo)
+
+1. Instalar Equalizer APO (`EqualizerAPO-x64-1.4.2.exe` desde SourceForge).
+   En el "Device Selector": marcar el dispositivo de PLAYBACK real (el que
+   aparece como "Default device") y el mic real en CAPTURE (`Micrófono /
+   Realtek USB Audio` en este equipo -- NO el que dice Steren COM-126, es
+   la webcam).
+2. **Reiniciar Windows** -- obligatorio, no opcional. El primer intento sin
+   reiniciar tiró "This application failed to start because no Qt platform
+   plugin could be initialized" al abrir `Editor.exe`.
+3. Instalar EchoNull (`EchoNullSetup-Ada-RTX40.exe` para RTX 40 series --
+   hay builds separados por arquitectura NVIDIA, verificar SHA-256 contra
+   el `.sha256` publicado en el release antes de correr cualquier instalador
+   de un proyecto de baja adopción).
+4. Si el Qt Platform Plugin sigue fallando después de reiniciar: bug de
+   empaquetado real encontrado hoy -- los DLLs `Qt6*.dll` quedan en la raíz
+   de `C:\Program Files\EqualizerAPO\`, pero `qwindows.dll` (el plugin de
+   plataforma) queda en `qt\platforms\`, una ruta que Qt no busca por
+   default. Fix: copiar (como administrador) `qt\platforms\*` a
+   `C:\Program Files\EqualizerAPO\platforms\`.
+5. Abrir `Editor.exe`, ir a la sección de CAPTURE, abrir el panel de
+   `EchoNullPlugin` ("Open panel"), elegir el dispositivo de reproducción
+   real como "Playback reference", y **APPLY REFERENCE**.
+
+### El obstáculo real: MME vs WASAPI
+
+Equalizer APO/EchoNull solo intercepta streams **WASAPI** reales -- el mic
+vía **MME** (lo que usaba el pipeline hasta hoy, porque resamplea
+automático a 16kHz) no pasa por ese pipeline de audio compartido, así que
+el panel seguía mostrando "AUDIO ENGINE OFFLINE" con el pipeline corriendo.
+Probar WASAPI directo con `audio_in_sample_rate=16000` falla con
+`[Errno -9997] Invalid sample rate`: el dispositivo nativo es 48kHz y
+PortAudio no resamplea automático para ese backend (sí lo hace para MME).
+
+Un `audio_in_filter` (el mecanismo que usaba el AEC casero) **no alcanza**
+para resolver esto: el filtro solo puede tocar `frame.audio` (los bytes),
+pero `frame.sample_rate` ya quedó fijado en 16000 antes de que el filtro
+corra -- resamplear ahí desalinea el frame (dice 16000Hz pero lleva menos
+muestras de las que corresponden).
+
+**Fix real**: `services/wasapi_resampled_input.py`
+(`WASAPIResampledInputTransport`, hereda de
+`pipecat.transports.local.audio.LocalAudioInputTransport`) abre el stream
+PyAudio a la tasa NATIVA (48kHz) y resamplea cada chunk a 16kHz en el
+propio callback antes de armar el `InputAudioRawFrame` -- así el frame
+reporta el sample_rate correcto Y el contenido corresponde de verdad a esa
+tasa. `LocalAudioTransport.input()` no permite inyectar un transport propio
+(hardcodea la clase), así que se instancia esta clase directo en la lista
+del pipeline, compartiendo el mismo `pyaudio.PyAudio()` que
+`transport.output()` (parlante) para no abrir el subsistema de audio dos
+veces.
+
+Verificado en vivo: panel de EchoNull pasó de "AUDIO ENGINE OFFLINE" a
+**"RTX AEC ACTIVE"** con el pipeline corriendo de verdad.
+
+### Rollback si hace falta
+
+`services/aec_filter.py` y `tools/calibrate_aec_delay.py` quedan en el repo
+sin usar. Para volver: reactivar `audio_in_filter=WebRTCAECFilter(far_end_buffer,
+stream_delay_ms=172)` en `LocalAudioTransportParams`, volver
+`input_device_index` a host API `"MME"`, y sacar `WASAPIResampledInputTransport`
+de la lista del pipeline (usar `transport.input()` de nuevo).
+
+### Bug no relacionado encontrado en el camino (mic roto silenciosamente)
+
+Instalar Equalizer APO agregó endpoints de audio virtuales al sistema, lo
+que corrió el ORDEN DE ENUMERACIÓN de PortAudio -- `input_device_index=1`
+(fijo, hardcodeado, usado toda la sesión) pasó de apuntar a "Micrófono
+(Realtek USB Audio)" a apuntar a "Micrófono (Steren COM-126)" (el mic de
+la webcam, ya descartado como incorrecto hace tiempo). El pipeline quedó
+escuchando por la webcam **sin ningún error visible** -- la peor clase de
+bug, y probablemente explica (al menos en parte) la calidad de
+transcripción muy degradada observada en un tramo de la sesión de hoy.
+
+Fix: `_find_mic_device_index()` en `main.py` busca el micrófono por NOMBRE
++ host API en vez de por índice numérico fijo. Instalar/desinstalar
+cualquier dispositivo o driver de audio (como pasó hoy) puede volver a
+correr los índices -- buscar por nombre sobrevive a eso.
+
 ## Notas / gotchas encontrados
 
 - **`localhost` en Windows resuelve primero a IPv6 (`::1`)**, que no
