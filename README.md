@@ -172,7 +172,7 @@ Verificación: `python tools/smoke_nemotron_multi.py` → 4/4 frases exactas en
 ES y EN, deltas confirmados incrementales durante el turno, y la reapertura
 de turno probada (segundo turno seguido con la misma instancia también OK).
 
-## Migración AEC: WebRTC AEC3 casero → EchoNull (NVIDIA NvAFX, GPU)
+## Migración AEC: WebRTC AEC3 casero → EchoNull (probado, REVERTIDO)
 
 **Motivo**: el AEC casero (`services/aec_filter.py`, WebRTC AEC3 + loopback
 WASAPI manual) seguía amplificando en vez de cancelar en ~15-20% de los
@@ -257,13 +257,37 @@ veces.
 Verificado en vivo: panel de EchoNull pasó de "AUDIO ENGINE OFFLINE" a
 **"RTX AEC ACTIVE"** con el pipeline corriendo de verdad.
 
-### Rollback si hace falta
+### Resultado final: REVERTIDO, EchoNull cancelaba la voz real
 
-`services/aec_filter.py` y `tools/calibrate_aec_delay.py` quedan en el repo
-sin usar. Para volver: reactivar `audio_in_filter=WebRTCAECFilter(far_end_buffer,
-stream_delay_ms=172)` en `LocalAudioTransportParams`, volver
-`input_device_index` a host API `"MME"`, y sacar `WASAPIResampledInputTransport`
-de la lista del pipeline (usar `transport.input()` de nuevo).
+Con el transport WASAPI andando y el panel confirmando "RTX AEC ACTIVE",
+la prueba en vivo dio transcripciones de basura ("Olana Spraylo ne podemos
+tu Quelo Bueno" en vez de "hola, ¿me escuchás?") y el pipeline se quedaba
+colgado (VAD nunca veía silencio real). Se aisló la causa con una medición
+cruda del nivel de señal (`tools/wasapi_level_check.py`, RMS/pico crudo del
+dispositivo, sin pasar por el pipeline):
+
+| Config EchoNull | Pico máx. capturado (de 32767) |
+| --- | --- |
+| AEC ON, reference strength máximo | ~32 |
+| AEC ON, reference strength bajo | ~32 (igual) |
+| **AEC OFF** | **32502** (normal) |
+
+**EchoNull cancelaba la voz real del usuario casi al 100%, independiente
+de la fuerza configurada** -- no era un tema de tuning. Se confirmó que el
+dispositivo de referencia de reproducción SÍ era el correcto (coincide con
+el output real del pipeline, `FHQD40IF01`, verificado con
+`get_default_output_device_info()`). La causa más probable: EchoNull no
+expone NINGÚN control de delay/alineación temporal en su UI (solo strength
+y on/off) -- sin eso, un AEC (clásico o neuronal) queda desalineado y
+entra en falsos positivos masivos, cancelando audio que no tiene relación
+real con el playback. Nuestro AEC3 evita esto porque el delay SÍ está
+calibrado con medición real (chirp, 172ms).
+
+**Revertido a WebRTC AEC3 casero** (commit siguiente a la migración).
+`services/aec_filter.py` sigue en uso; `services/wasapi_resampled_input.py`
+y `tools/wasapi_level_check.py` quedan en el repo sin usar, documentados
+como referencia si EchoNull algún día expone control de delay.
+
 
 ### Bug no relacionado encontrado en el camino (mic roto silenciosamente)
 

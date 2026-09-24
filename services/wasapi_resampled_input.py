@@ -1,22 +1,23 @@
-"""Input transport de micrófono que abre WASAPI a su tasa NATIVA (48kHz)
-y resamplea a la tasa que pide el pipeline (16kHz) en el propio proceso,
-en vez de dejar que PyAudio le pida directo 16kHz al dispositivo.
+"""SIN USAR -- probado en vivo y DESCARTADO, queda como referencia (mismo
+criterio que services/aec_filter.py, que este archivo justamente vino a
+reemplazar y terminó no reemplazando). Ver README, sección "Migración
+AEC" para el detalle completo.
 
-Por qué hace falta: el mic vía MME (lo que usábamos hasta ahora) sí
-resamplea automáticamente, pero MME no pasa por el pipeline de audio
-compartido de Windows (WASAPI) donde vive un Audio Processing Object de
-terceros como EchoNull (AEC por GPU vía Equalizer APO, ver README) --
-Equalizer APO solo intercepta streams WASAPI reales. WASAPI shared mode
-SÍ pasa por ahí, pero PortAudio no resamplea automáticamente para ese
-backend: pedirle 16kHz directo a un dispositivo WASAPI nativo de 48kHz
-tira "[Errno -9997] Invalid sample rate" (confirmado en vivo, documentado
-en README).
+Resuelve un problema real (WASAPI necesita abrirse a su tasa nativa,
+48kHz, y resamplear a 16kHz en proceso para que Equalizer APO/EchoNull
+puedan interceptar el mic) -- la clase en sí funciona bien, verificado en
+logs ("[WASAPIResampledInput] Mic abierto @ 48000Hz..." sin errores).
 
-`pipecat.transports.local.audio.LocalAudioTransport` no expone forma de
-inyectar un input transport propio (hardcodea `LocalAudioInputTransport`
-en `.input()`), así que esta clase se usa DIRECTO en la lista del
-pipeline en vez de `transport.input()`, compartiendo el mismo objeto
-`pyaudio.PyAudio()` para no abrir dos veces el subsistema de audio.
+Se descartó por lo que había DETRÁS: EchoNull, medido en vivo con
+captura cruda (tools/wasapi_level_check.py), cancelaba la voz REAL del
+usuario casi al 100% (pico 32/32767 con su AEC activo vs. 32502/32767
+con el AEC apagado) -- no tiene ningún control de delay/alineación
+expuesto, a diferencia de nuestro WebRTCAECFilter (aec_filter.py),
+calibrado con chirp real a 172ms. Si algún día EchoNull expone ese
+control, esta clase sigue siendo el punto de entrada correcto para
+reactivarlo (cambiar `input_device_index` a host API "WASAPI" en
+main.py y usar `WASAPIResampledInputTransport` en vez de
+`transport.input()` en la lista del pipeline).
 """
 
 from __future__ import annotations
